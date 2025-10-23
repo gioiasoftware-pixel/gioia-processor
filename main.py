@@ -6,6 +6,7 @@ import asyncio
 from database import get_db, create_tables, save_inventory_to_db, get_inventory_status
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
+from ai_processor import ai_processor
 import logging
 
 # Configurazione logging
@@ -25,17 +26,33 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    """Inizializza database al startup"""
+    """Inizializza database e AI al startup"""
     try:
         await create_tables()
         logger.info("Database tables created successfully")
+        
+        # Verifica configurazione AI
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if openai_key:
+            logger.info("OpenAI API key configured - AI features enabled")
+        else:
+            logger.warning("OpenAI API key not found - AI features disabled")
+            
     except Exception as e:
-        logger.error(f"Error creating database tables: {e}")
+        logger.error(f"Error during startup: {e}")
 
 @app.get("/health")
 async def health_check():
     """Health check del servizio"""
-    return {"status": "healthy", "service": "gioia-processor"}
+    # Verifica stato AI
+    ai_status = "enabled" if os.getenv("OPENAI_API_KEY") else "disabled"
+    
+    return {
+        "status": "healthy", 
+        "service": "gioia-processor",
+        "ai_enabled": ai_status,
+        "features": ["csv_processing", "excel_processing", "ocr", "ai_enhancement"]
+    }
 
 @app.post("/process-inventory")
 async def process_inventory(
@@ -70,12 +87,17 @@ async def process_inventory(
         
         logger.info(f"Successfully processed {len(wines_data)} wines for inventory {inventory_id}")
         
+        # Informazioni AI per debugging
+        ai_enabled = "yes" if os.getenv("OPENAI_API_KEY") else "no"
+        
         return {
             "status": "success",
             "total_wines": len(wines_data),
             "business_name": business_name,
             "telegram_id": telegram_id,
-            "inventory_id": inventory_id
+            "inventory_id": inventory_id,
+            "ai_enhanced": ai_enabled,
+            "processing_method": f"ai_enhanced_{file_type.lower()}"
         }
         
     except Exception as e:
@@ -94,6 +116,62 @@ async def get_status(telegram_id: int):
     except Exception as e:
         logger.error(f"Error getting status for telegram_id {telegram_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")
+
+@app.get("/ai/status")
+async def ai_status():
+    """Stato dell'AI processor"""
+    try:
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key:
+            return {
+                "ai_enabled": False,
+                "message": "OpenAI API key not configured"
+            }
+        
+        # Test connessione OpenAI
+        try:
+            # Test semplice con AI
+            test_result = await ai_processor.classify_wine_type("Chianti Classico")
+            return {
+                "ai_enabled": True,
+                "openai_connected": True,
+                "test_classification": test_result,
+                "message": "AI processor ready"
+            }
+        except Exception as e:
+            return {
+                "ai_enabled": True,
+                "openai_connected": False,
+                "error": str(e),
+                "message": "AI processor configured but not responding"
+            }
+            
+    except Exception as e:
+        return {
+            "ai_enabled": False,
+            "error": str(e),
+            "message": "Error checking AI status"
+        }
+
+@app.post("/ai/test")
+async def test_ai_processing(
+    text: str = Form(...)
+):
+    """Test AI processing con testo"""
+    try:
+        # Estrai vini dal testo usando AI
+        wines = await ai_processor.extract_wines_from_text(text)
+        
+        return {
+            "status": "success",
+            "wines_found": len(wines),
+            "wines": wines,
+            "ai_processing": True
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in AI test: {e}")
+        raise HTTPException(status_code=500, detail=f"AI test failed: {str(e)}")
 
 
 if __name__ == "__main__":

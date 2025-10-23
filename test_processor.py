@@ -126,6 +126,52 @@ def test_database_connection():
         print(f"❌ Database test error: {e}")
         return False
 
+def test_ai_status():
+    """Test stato AI"""
+    print("🔍 Testing AI status...")
+    try:
+        response = requests.get(f"{BASE_URL}/ai/status", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("ai_enabled"):
+                print(f"✅ AI enabled: {data.get('message', 'OK')}")
+                return True
+            else:
+                print(f"⚠️  AI disabled: {data.get('message', 'Not configured')}")
+                return False
+        else:
+            print(f"❌ AI status check failed: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ AI status error: {e}")
+        return False
+
+def test_ai_processing():
+    """Test elaborazione AI"""
+    print("🔍 Testing AI processing...")
+    try:
+        test_text = """
+        Chianti Classico 2019 - Antinori - Toscana - €25.50
+        Pinot Grigio 2020 - Alois Lageder - Alto Adige - €18.00
+        Prosecco 2021 - La Marca - Veneto - €12.00
+        """
+        
+        data = {"text": test_text}
+        response = requests.post(f"{BASE_URL}/ai/test", data=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            wines_found = result.get("wines_found", 0)
+            print(f"✅ AI processing OK: {wines_found} wines found")
+            return True
+        else:
+            print(f"❌ AI processing failed: {response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ AI processing error: {e}")
+        return False
+
 def main():
     """Esegue tutti i test"""
     print("🍷 Gioia Processor - Test Suite")
@@ -135,6 +181,8 @@ def main():
         ("Health Check", test_health_check),
         ("Status Endpoint", test_status_endpoint),
         ("Database Connection", test_database_connection),
+        ("AI Status", test_ai_status),
+        ("AI Processing", test_ai_processing),
         ("Process Inventory", test_process_inventory),
     ]
     

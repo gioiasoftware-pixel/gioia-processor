@@ -4,12 +4,13 @@ import io
 import re
 import logging
 from typing import List, Dict, Any
+from ai_processor import ai_processor
 
 logger = logging.getLogger(__name__)
 
 async def process_image_ocr(file_content: bytes) -> List[Dict[str, Any]]:
     """
-    Processa immagine con OCR e estrae dati sui vini
+    Processa immagine con OCR e AI per estrarre dati sui vini
     """
     try:
         # Apri immagine
@@ -20,15 +21,31 @@ async def process_image_ocr(file_content: bytes) -> List[Dict[str, Any]]:
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
-        # Esegui OCR
+        # Esegui OCR tradizionale
         ocr_text = pytesseract.image_to_string(image, lang='ita+eng')
         logger.info(f"OCR extracted {len(ocr_text)} characters")
         
-        # Estrai dati vini dal testo OCR
-        wines_data = extract_wines_from_ocr_text(ocr_text)
+        # Usa AI per estrarre dati vini dal testo OCR
+        wines_data = await ai_processor.extract_wines_from_text(ocr_text)
         
-        logger.info(f"Extracted {len(wines_data)} wines from OCR")
-        return wines_data
+        # Se AI non trova vini, prova con estrazione tradizionale
+        if not wines_data:
+            logger.info("AI didn't find wines, trying traditional extraction")
+            wines_data = extract_wines_from_ocr_text(ocr_text)
+            
+            # Migliora dati tradizionali con AI
+            if wines_data:
+                improved_wines = []
+                for wine in wines_data:
+                    improved_wine = await ai_processor.improve_wine_data(wine)
+                    improved_wines.append(improved_wine)
+                wines_data = improved_wines
+        
+        # Valida vini con AI
+        validated_wines = await ai_processor.validate_wine_data(wines_data)
+        
+        logger.info(f"AI processed {len(validated_wines)} wines from OCR image")
+        return validated_wines
         
     except Exception as e:
         logger.error(f"Error processing image with OCR: {e}")

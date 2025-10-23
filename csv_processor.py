@@ -3,39 +3,41 @@ import io
 import re
 import logging
 from typing import List, Dict, Any
+from ai_processor import ai_processor
 
 logger = logging.getLogger(__name__)
 
 async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
     """
-    Processa file CSV e estrae dati sui vini
+    Processa file CSV e estrae dati sui vini usando AI
     """
     try:
         # Leggi CSV da bytes
         df = pd.read_csv(io.BytesIO(file_content))
         logger.info(f"CSV loaded with {len(df)} rows and {len(df.columns)} columns")
         
+        # Usa AI per analizzare struttura CSV
+        csv_text = df.to_string()
+        ai_analysis = await ai_processor.analyze_csv_structure(csv_text)
+        
+        # Applica mapping AI se disponibile
+        if ai_analysis.get('column_mapping'):
+            column_mapping = ai_analysis['column_mapping']
+            logger.info(f"AI detected column mapping: {column_mapping}")
+        else:
+            # Fallback a mapping tradizionale
+            column_mapping = {
+                'nome': 'name', 'vino': 'name', 'wine': 'name',
+                'annata': 'vintage', 'year': 'vintage',
+                'produttore': 'producer', 'producer': 'producer',
+                'regione': 'region', 'region': 'region',
+                'prezzo': 'price', 'price': 'price',
+                'quantità': 'quantity', 'qty': 'quantity',
+                'tipo': 'wine_type', 'type': 'wine_type'
+            }
+        
         # Normalizza nomi colonne
         df.columns = df.columns.str.lower().str.strip()
-        
-        # Mappa colonne comuni
-        column_mapping = {
-            'nome': 'name',
-            'vino': 'name',
-            'wine': 'name',
-            'annata': 'vintage',
-            'year': 'vintage',
-            'produttore': 'producer',
-            'producer': 'producer',
-            'regione': 'region',
-            'region': 'region',
-            'prezzo': 'price',
-            'price': 'price',
-            'quantità': 'quantity',
-            'qty': 'quantity',
-            'tipo': 'wine_type',
-            'type': 'wine_type'
-        }
         
         # Rinomina colonne
         df = df.rename(columns=column_mapping)
@@ -46,13 +48,18 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
             try:
                 wine_data = extract_wine_data_from_row(row)
                 if wine_data and wine_data.get('name'):
-                    wines_data.append(wine_data)
+                    # Usa AI per migliorare dati vino
+                    improved_wine = await ai_processor.improve_wine_data(wine_data)
+                    wines_data.append(improved_wine)
             except Exception as e:
                 logger.warning(f"Error processing row {index}: {e}")
                 continue
         
-        logger.info(f"Extracted {len(wines_data)} wines from CSV")
-        return wines_data
+        # Usa AI per validare e filtrare vini
+        validated_wines = await ai_processor.validate_wine_data(wines_data)
+        
+        logger.info(f"AI processed {len(validated_wines)} wines from CSV (confidence: {ai_analysis.get('confidence', 0)})")
+        return validated_wines
         
     except Exception as e:
         logger.error(f"Error processing CSV file: {e}")
@@ -60,34 +67,35 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
 
 async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
     """
-    Processa file Excel e estrae dati sui vini
+    Processa file Excel e estrae dati sui vini usando AI
     """
     try:
         # Leggi Excel da bytes
         df = pd.read_excel(io.BytesIO(file_content))
         logger.info(f"Excel loaded with {len(df)} rows and {len(df.columns)} columns")
         
+        # Usa AI per analizzare struttura Excel
+        excel_text = df.to_string()
+        ai_analysis = await ai_processor.analyze_csv_structure(excel_text)
+        
+        # Applica mapping AI se disponibile
+        if ai_analysis.get('column_mapping'):
+            column_mapping = ai_analysis['column_mapping']
+            logger.info(f"AI detected column mapping: {column_mapping}")
+        else:
+            # Fallback a mapping tradizionale
+            column_mapping = {
+                'nome': 'name', 'vino': 'name', 'wine': 'name',
+                'annata': 'vintage', 'year': 'vintage',
+                'produttore': 'producer', 'producer': 'producer',
+                'regione': 'region', 'region': 'region',
+                'prezzo': 'price', 'price': 'price',
+                'quantità': 'quantity', 'qty': 'quantity',
+                'tipo': 'wine_type', 'type': 'wine_type'
+            }
+        
         # Normalizza nomi colonne
         df.columns = df.columns.str.lower().str.strip()
-        
-        # Mappa colonne comuni
-        column_mapping = {
-            'nome': 'name',
-            'vino': 'name',
-            'wine': 'name',
-            'annata': 'vintage',
-            'year': 'vintage',
-            'produttore': 'producer',
-            'producer': 'producer',
-            'regione': 'region',
-            'region': 'region',
-            'prezzo': 'price',
-            'price': 'price',
-            'quantità': 'quantity',
-            'qty': 'quantity',
-            'tipo': 'wine_type',
-            'type': 'wine_type'
-        }
         
         # Rinomina colonne
         df = df.rename(columns=column_mapping)
@@ -98,13 +106,18 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
             try:
                 wine_data = extract_wine_data_from_row(row)
                 if wine_data and wine_data.get('name'):
-                    wines_data.append(wine_data)
+                    # Usa AI per migliorare dati vino
+                    improved_wine = await ai_processor.improve_wine_data(wine_data)
+                    wines_data.append(improved_wine)
             except Exception as e:
                 logger.warning(f"Error processing row {index}: {e}")
                 continue
         
-        logger.info(f"Extracted {len(wines_data)} wines from Excel")
-        return wines_data
+        # Usa AI per validare e filtrare vini
+        validated_wines = await ai_processor.validate_wine_data(wines_data)
+        
+        logger.info(f"AI processed {len(validated_wines)} wines from Excel (confidence: {ai_analysis.get('confidence', 0)})")
+        return validated_wines
         
     except Exception as e:
         logger.error(f"Error processing Excel file: {e}")

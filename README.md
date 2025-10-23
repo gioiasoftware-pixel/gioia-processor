@@ -7,14 +7,17 @@
 ## 🚀 Funzionalità
 
 ### **File Processing**
-- **CSV**: Parsing file CSV con pattern matching intelligente
-- **Excel**: Supporto file Excel (.xlsx, .xls) con openpyxl
-- **OCR**: Riconoscimento testo da immagini inventari con Tesseract
+- **CSV**: Parsing file CSV con AI GPT-4 per riconoscimento intelligente colonne
+- **Excel**: Supporto file Excel (.xlsx, .xls) con AI enhancement
+- **OCR**: Riconoscimento testo da immagini con Tesseract + AI GPT-4
+- **AI Enhancement**: Miglioramento automatico dati vini con OpenAI GPT-4
 
 ### **API Endpoints**
 - `GET /health` - Health check del servizio
 - `POST /process-inventory` - Elabora file inventario
 - `GET /status/{telegram_id}` - Stato elaborazione utente
+- `GET /ai/status` - Stato AI processor
+- `POST /ai/test` - Test elaborazione AI
 
 ### **Database Integration**
 - Connessione PostgreSQL con SQLAlchemy
@@ -89,6 +92,9 @@ Nel dashboard Railway del progetto:
 # Variabili obbligatorie
 DATABASE_URL=postgresql://user:pass@host:port/db
 PORT=8001
+
+# Variabili AI (opzionali ma consigliate)
+OPENAI_API_KEY=your_openai_api_key
 
 # Variabili opzionali
 PYTHON_VERSION=3.11
