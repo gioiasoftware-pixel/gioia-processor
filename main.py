@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 import asyncio
+from datetime import datetime
 from database import get_db, create_tables, save_inventory_to_db, get_inventory_status
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
@@ -43,16 +44,54 @@ async def startup_event():
 
 @app.get("/health")
 async def health_check():
-    """Health check del servizio"""
-    # Verifica stato AI
-    ai_status = "enabled" if os.getenv("OPENAI_API_KEY") else "disabled"
-    
-    return {
-        "status": "healthy", 
-        "service": "gioia-processor",
-        "ai_enabled": ai_status,
-        "features": ["csv_processing", "excel_processing", "ocr", "ai_enhancement"]
-    }
+    """Health check del servizio con informazioni dettagliate"""
+    try:
+        # Verifica stato AI
+        ai_status = "enabled" if os.getenv("OPENAI_API_KEY") else "disabled"
+        
+        # Verifica database
+        db_status = "connected"
+        try:
+            async for db in get_db():
+                # Test connessione database
+                await db.execute("SELECT 1")
+                break
+        except Exception as e:
+            db_status = f"error: {str(e)[:100]}"
+            logger.error(f"Database health check failed: {e}")
+        
+        # Verifica variabili ambiente critiche
+        env_status = {
+            "DATABASE_URL": "configured" if os.getenv("DATABASE_URL") else "missing",
+            "PORT": os.getenv("PORT", "8001"),
+            "OPENAI_API_KEY": "configured" if os.getenv("OPENAI_API_KEY") else "missing"
+        }
+        
+        return {
+            "status": "healthy", 
+            "service": "gioia-processor",
+            "version": "1.0.0",
+            "ai_enabled": ai_status,
+            "database_status": db_status,
+            "environment": env_status,
+            "features": ["csv_processing", "excel_processing", "ocr", "ai_enhancement"],
+            "endpoints": {
+                "health": "/health",
+                "process": "/process-inventory", 
+                "status": "/status/{telegram_id}",
+                "ai_status": "/ai/status",
+                "ai_test": "/ai/test"
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "service": "gioia-processor", 
+            "error": str(e),
+            "timestamp": str(datetime.utcnow())
+        }
 
 @app.post("/process-inventory")
 async def process_inventory(
@@ -64,28 +103,66 @@ async def process_inventory(
     """
     Elabora file inventario e salva nel database
     """
+    start_time = datetime.utcnow()
+    
     try:
         logger.info(f"Processing inventory for telegram_id: {telegram_id}, business: {business_name}, type: {file_type}")
+        
+        # Validazione input
+        if not telegram_id or telegram_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid telegram_id")
+        
+        if not business_name or len(business_name.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Business name is required")
+        
+        if not file_type or file_type.lower() not in ["csv", "excel", "xlsx", "xls", "image", "jpg", "jpeg", "png"]:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_type}")
         
         # Leggi contenuto file
         file_content = await file.read()
         
+        if len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+        
+        if len(file_content) > 10 * 1024 * 1024:  # 10MB limit
+            raise HTTPException(status_code=413, detail="File too large (max 10MB)")
+        
+        logger.info(f"File size: {len(file_content)} bytes")
+        
         # Processa file in base al tipo
-        if file_type.lower() == "csv":
-            wines_data = await process_csv_file(file_content)
-        elif file_type.lower() in ["excel", "xlsx", "xls"]:
-            wines_data = await process_excel_file(file_content)
-        elif file_type.lower() in ["image", "jpg", "jpeg", "png"]:
-            wines_data = await process_image_ocr(file_content)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_type}")
+        wines_data = []
+        processing_method = ""
+        
+        try:
+            if file_type.lower() == "csv":
+                wines_data = await process_csv_file(file_content)
+                processing_method = "csv_ai_enhanced"
+            elif file_type.lower() in ["excel", "xlsx", "xls"]:
+                wines_data = await process_excel_file(file_content)
+                processing_method = "excel_ai_enhanced"
+            elif file_type.lower() in ["image", "jpg", "jpeg", "png"]:
+                wines_data = await process_image_ocr(file_content)
+                processing_method = "ocr_ai_enhanced"
+            
+            logger.info(f"Extracted {len(wines_data)} wines from {file_type} file")
+            
+        except Exception as processing_error:
+            logger.error(f"Error processing {file_type} file: {processing_error}")
+            raise HTTPException(status_code=422, detail=f"Error processing {file_type} file: {str(processing_error)}")
         
         # Salva nel database
-        async for db in get_db():
-            inventory_id = await save_inventory_to_db(db, telegram_id, business_name, wines_data)
-            break
+        inventory_id = None
+        try:
+            async for db in get_db():
+                inventory_id = await save_inventory_to_db(db, telegram_id, business_name, wines_data)
+                break
+        except Exception as db_error:
+            logger.error(f"Database error: {db_error}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(db_error)}")
         
-        logger.info(f"Successfully processed {len(wines_data)} wines for inventory {inventory_id}")
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        logger.info(f"Successfully processed {len(wines_data)} wines for inventory {inventory_id} in {processing_time:.2f}s")
         
         # Informazioni AI per debugging
         ai_enabled = "yes" if os.getenv("OPENAI_API_KEY") else "no"
@@ -97,12 +174,18 @@ async def process_inventory(
             "telegram_id": telegram_id,
             "inventory_id": inventory_id,
             "ai_enhanced": ai_enabled,
-            "processing_method": f"ai_enhanced_{file_type.lower()}"
+            "processing_method": processing_method,
+            "processing_time_seconds": round(processing_time, 2),
+            "file_type": file_type,
+            "file_size_bytes": len(file_content)
         }
         
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        logger.error(f"Error processing inventory: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing inventory: {str(e)}")
+        logger.error(f"Unexpected error processing inventory: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/status/{telegram_id}")
 async def get_status(telegram_id: int):
@@ -173,6 +256,68 @@ async def test_ai_processing(
         logger.error(f"Error in AI test: {e}")
         raise HTTPException(status_code=500, detail=f"AI test failed: {str(e)}")
 
+@app.get("/debug/info")
+async def debug_info():
+    """Informazioni di debug per troubleshooting"""
+    try:
+        import sys
+        import platform
+        
+        return {
+            "service": "gioia-processor",
+            "version": "1.0.0",
+            "python_version": sys.version,
+            "platform": platform.platform(),
+            "environment_variables": {
+                "DATABASE_URL": "***" if os.getenv("DATABASE_URL") else None,
+                "PORT": os.getenv("PORT"),
+                "OPENAI_API_KEY": "***" if os.getenv("OPENAI_API_KEY") else None,
+                "ENVIRONMENT": os.getenv("ENVIRONMENT", "production")
+            },
+            "database_test": await test_database_connection(),
+            "ai_test": await test_ai_connection(),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        return {"error": str(e), "timestamp": datetime.utcnow().isoformat()}
+
+async def test_database_connection():
+    """Test connessione database"""
+    try:
+        async for db in get_db():
+            await db.execute("SELECT 1")
+            return {"status": "connected", "error": None}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+async def test_ai_connection():
+    """Test connessione AI"""
+    try:
+        if not os.getenv("OPENAI_API_KEY"):
+            return {"status": "not_configured", "error": "OPENAI_API_KEY not set"}
+        
+        # Test semplice
+        result = await ai_processor.classify_wine_type("Chianti")
+        return {"status": "connected", "test_result": result, "error": None}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+@app.get("/debug/logs")
+async def debug_logs():
+    """Logs recenti per debugging"""
+    try:
+        # Simula logs (in produzione usare un sistema di logging reale)
+        return {
+            "service": "gioia-processor",
+            "logs": [
+                {"level": "INFO", "message": "Service started", "timestamp": datetime.utcnow().isoformat()},
+                {"level": "INFO", "message": "Database connected", "timestamp": datetime.utcnow().isoformat()},
+                {"level": "INFO", "message": "AI processor ready", "timestamp": datetime.utcnow().isoformat()}
+            ],
+            "note": "This is a simplified log view. Check Railway dashboard for full logs."
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))

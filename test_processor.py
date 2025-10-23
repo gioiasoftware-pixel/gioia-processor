@@ -172,6 +172,39 @@ def test_ai_processing():
         print(f"❌ AI processing error: {e}")
         return False
 
+def test_debug_info():
+    """Test debug info endpoint"""
+    print("🔍 Testing debug info...")
+    try:
+        response = requests.get(f"{BASE_URL}/debug/info", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ Debug info OK: {data.get('service', 'Unknown')} v{data.get('version', 'Unknown')}")
+            return True
+        else:
+            print(f"❌ Debug info failed: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ Debug info error: {e}")
+        return False
+
+def test_debug_logs():
+    """Test debug logs endpoint"""
+    print("🔍 Testing debug logs...")
+    try:
+        response = requests.get(f"{BASE_URL}/debug/logs", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            logs_count = len(data.get("logs", []))
+            print(f"✅ Debug logs OK: {logs_count} log entries")
+            return True
+        else:
+            print(f"❌ Debug logs failed: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ Debug logs error: {e}")
+        return False
+
 def main():
     """Esegue tutti i test"""
     print("🍷 Gioia Processor - Test Suite")
@@ -183,6 +216,8 @@ def main():
         ("Database Connection", test_database_connection),
         ("AI Status", test_ai_status),
         ("AI Processing", test_ai_processing),
+        ("Debug Info", test_debug_info),
+        ("Debug Logs", test_debug_logs),
         ("Process Inventory", test_process_inventory),
     ]
     
