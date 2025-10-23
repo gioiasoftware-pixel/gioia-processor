@@ -5,6 +5,7 @@ import os
 import asyncio
 from datetime import datetime
 from database import get_db, create_tables, save_inventory_to_db, get_inventory_status
+from config import validate_config
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
 from ai_processor import ai_processor
@@ -29,6 +30,10 @@ app.add_middleware(
 async def startup_event():
     """Inizializza database e AI al startup"""
     try:
+        # Valida configurazione
+        validate_config()
+        
+        # Crea tabelle database
         await create_tables()
         logger.info("Database tables created successfully")
         

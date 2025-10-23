@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -11,38 +11,107 @@ logger = logging.getLogger(__name__)
 # Base per i modelli
 Base = declarative_base()
 
-class Inventory(Base):
-    """Modello per inventari"""
-    __tablename__ = "inventories"
+class User(Base):
+    """Modello per gli utenti del bot"""
+    __tablename__ = 'users'
     
-    id = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(Integer, nullable=False, index=True)
-    business_name = Column(String(255), nullable=False)
-    status = Column(String(50), default="processing")
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, nullable=False, index=True)
+    username = Column(String(100))
+    first_name = Column(String(100))
+    last_name = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relazione con vini
-    wines = relationship("Wine", back_populates="inventory", cascade="all, delete-orphan")
+    # Dati onboarding
+    business_name = Column(String(200))
+    business_type = Column(String(100))  # enoteca, ristorante, bar, etc.
+    location = Column(String(200))
+    phone = Column(String(50))
+    email = Column(String(200))
+    onboarding_completed = Column(Boolean, default=False)
+    
+    # Relazioni
+    wines = relationship("Wine", back_populates="user", cascade="all, delete-orphan")
+    inventory_backups = relationship("InventoryBackup", back_populates="user", cascade="all, delete-orphan")
+    inventory_logs = relationship("InventoryLog", back_populates="user", cascade="all, delete-orphan")
 
 class Wine(Base):
-    """Modello per vini"""
-    __tablename__ = "wines"
+    """Modello per l'inventario vini"""
+    __tablename__ = 'wines'
     
-    id = Column(Integer, primary_key=True, index=True)
-    inventory_id = Column(Integer, ForeignKey("inventories.id"), nullable=False)
-    name = Column(String(255), nullable=False)
-    vintage = Column(String(10))
-    producer = Column(String(255))
-    region = Column(String(255))
-    price = Column(Float)
-    quantity = Column(Integer, default=1)
-    wine_type = Column(String(50))  # rosso/bianco/rosato/spumante
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    
+    # Dati vino
+    name = Column(String(200), nullable=False)
+    producer = Column(String(200))
+    vintage = Column(Integer)  # Annata
+    grape_variety = Column(String(200))  # Vitigno
+    region = Column(String(200))
+    country = Column(String(100))
+    
+    # Classificazione
+    wine_type = Column(String(50))  # rosso, bianco, rosato, spumante, etc.
+    classification = Column(String(100))  # DOCG, DOC, IGT, etc.
+    
+    # Quantità e prezzi
+    quantity = Column(Integer, default=0)
+    min_quantity = Column(Integer, default=0)  # Scorta minima
+    cost_price = Column(Float)  # Prezzo di acquisto
+    selling_price = Column(Float)  # Prezzo di vendita
+    
+    # Dettagli
+    alcohol_content = Column(Float)  # Gradazione alcolica
+    description = Column(Text)
     notes = Column(Text)
+    
+    # Metadati
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relazioni
+    user = relationship("User", back_populates="wines")
+
+class InventoryBackup(Base):
+    """Backup dell'inventario iniziale per ogni utente"""
+    __tablename__ = 'inventory_backups'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    
+    # Dati del backup
+    backup_name = Column(String(200), nullable=False)  # "Inventario Iniziale", "Backup Giorno X"
+    backup_data = Column(Text, nullable=False)  # JSON con tutti i dati inventario
+    backup_type = Column(String(20), default="initial")  # 'initial', 'daily', 'manual'
+    
+    # Metadati
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    # Relazione con inventario
-    inventory = relationship("Inventory", back_populates="wines")
+    # Relazioni
+    user = relationship("User", back_populates="inventory_backups")
+
+class InventoryLog(Base):
+    """Log di consumi e rifornimenti per ogni utente"""
+    __tablename__ = 'inventory_logs'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    
+    # Dati del movimento
+    wine_name = Column(String(200), nullable=False)
+    wine_producer = Column(String(200))
+    movement_type = Column(String(20), nullable=False)  # 'consumo', 'rifornimento', 'aggiustamento'
+    quantity_change = Column(Integer, nullable=False)  # Positivo per rifornimenti, negativo per consumi
+    quantity_before = Column(Integer, nullable=False)  # Quantità prima del movimento
+    quantity_after = Column(Integer, nullable=False)   # Quantità dopo il movimento
+    
+    # Dettagli
+    notes = Column(Text)
+    movement_date = Column(DateTime, default=datetime.utcnow)
+    
+    # Relazioni
+    user = relationship("User", back_populates="inventory_logs")
 
 # Configurazione database
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/gioia_processor")
@@ -83,36 +152,46 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
     Salva inventario e vini nel database
     """
     try:
-        # Crea nuovo inventario
-        inventory = Inventory(
-            telegram_id=telegram_id,
-            business_name=business_name,
-            status="processing"
-        )
-        session.add(inventory)
-        await session.flush()  # Per ottenere l'ID
+        from sqlalchemy import select
+        
+        # Trova o crea utente
+        stmt = select(User).where(User.telegram_id == telegram_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            # Crea nuovo utente
+            user = User(
+                telegram_id=telegram_id,
+                business_name=business_name,
+                onboarding_completed=True
+            )
+            session.add(user)
+            await session.flush()
+        
+        # Aggiorna business_name se necessario
+        if not user.business_name:
+            user.business_name = business_name
+            user.onboarding_completed = True
         
         # Aggiungi vini
         for wine_data in wines_data:
             wine = Wine(
-                inventory_id=inventory.id,
+                user_id=user.id,
                 name=wine_data.get("name", ""),
                 vintage=wine_data.get("vintage"),
                 producer=wine_data.get("producer"),
                 region=wine_data.get("region"),
-                price=wine_data.get("price"),
+                selling_price=wine_data.get("price"),
                 quantity=wine_data.get("quantity", 1),
                 wine_type=wine_data.get("wine_type"),
                 notes=wine_data.get("notes")
             )
             session.add(wine)
         
-        # Aggiorna status inventario
-        inventory.status = "completed"
-        
         await session.commit()
-        logger.info(f"Saved inventory {inventory.id} with {len(wines_data)} wines")
-        return inventory.id
+        logger.info(f"Saved {len(wines_data)} wines for user {telegram_id}")
+        return user.id
         
     except Exception as e:
         await session.rollback()
@@ -125,10 +204,14 @@ async def get_user_inventories(session, telegram_id: int):
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
         
-        stmt = select(Inventory).where(Inventory.telegram_id == telegram_id).options(selectinload(Inventory.wines))
+        stmt = select(User).where(User.telegram_id == telegram_id).options(selectinload(User.wines))
         result = await session.execute(stmt)
-        inventories = result.scalars().all()
-        return inventories
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            return []
+        
+        return user.wines
     except Exception as e:
         logger.error(f"Error getting user inventories: {e}")
         raise
@@ -136,18 +219,28 @@ async def get_user_inventories(session, telegram_id: int):
 async def get_inventory_status(session, telegram_id: int):
     """Ottieni stato elaborazione per utente"""
     try:
-        inventories = await get_user_inventories(session, telegram_id)
+        from sqlalchemy import select
         
-        total_inventories = len(inventories)
-        completed_inventories = len([inv for inv in inventories if inv.status == "completed"])
-        last_processed = max([inv.created_at for inv in inventories]) if inventories else None
+        stmt = select(User).where(User.telegram_id == telegram_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            return {
+                "telegram_id": telegram_id,
+                "total_wines": 0,
+                "onboarding_completed": False,
+                "status": "not_found"
+            }
+        
+        wines_count = len(user.wines) if user.wines else 0
         
         return {
             "telegram_id": telegram_id,
-            "total_inventories": total_inventories,
-            "completed_inventories": completed_inventories,
-            "last_processed": last_processed,
-            "status": "completed" if completed_inventories == total_inventories else "processing"
+            "total_wines": wines_count,
+            "onboarding_completed": user.onboarding_completed,
+            "business_name": user.business_name,
+            "status": "completed" if user.onboarding_completed else "processing"
         }
     except Exception as e:
         logger.error(f"Error getting inventory status: {e}")
