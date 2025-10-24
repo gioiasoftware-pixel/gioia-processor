@@ -26,7 +26,7 @@ class AIProcessor:
             # Prepara prompt per analisi CSV
             prompt = f"""
 Analizza questo file CSV di inventario vini e identifica:
-1. Quali colonne contengono: nome vino, annata, produttore, regione, prezzo, quantità, tipo vino
+1. Quali colonne contengono: nome vino, annata, produttore, regione/paese, prezzo, quantità, tipo vino
 2. Mappa le colonne trovate nel formato JSON
 3. Identifica il separatore (virgola, punto e virgola, tab)
 4. Suggerisci miglioramenti per la struttura
@@ -59,7 +59,7 @@ Rispondi SOLO con JSON nel formato:
             response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "Sei un esperto di vini italiani e analisi dati. Analizza file CSV di inventari vini con precisione."},
+                    {"role": "system", "content": "Sei un esperto di vini e analisi dati. Analizza file CSV di inventari vini con precisione."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
@@ -94,7 +94,7 @@ Per ogni vino trovato, estrai:
 - Nome vino
 - Annata (solo anno 4 cifre)
 - Produttore
-- Regione
+- Regione/Paese
 - Prezzo (solo numero)
 - Quantità (solo numero)
 - Tipo vino (rosso/bianco/rosato/spumante)
@@ -105,7 +105,7 @@ Rispondi SOLO con JSON array:
         "name": "Nome Vino",
         "vintage": "2020",
         "producer": "Nome Produttore",
-        "region": "Regione",
+        "region": "Regione/Paese",
         "price": 25.50,
         "quantity": 12,
         "wine_type": "rosso"
@@ -121,7 +121,7 @@ Rispondi SOLO con JSON array:
             response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "Sei un esperto di vini italiani. Estrai dati vini da testi con massima precisione. Usa solo anni 4 cifre per le annate."},
+                    {"role": "system", "content": "Sei un esperto di vini. Estrai dati vini da testi con massima precisione. Usa solo anni 4 cifre per le annate."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
@@ -155,7 +155,7 @@ Rispondi con una sola parola.
             response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "Sei un esperto di vini italiani. Classifica il tipo di vino basandoti sul nome e caratteristiche."},
+                    {"role": "system", "content": "Sei un esperto di vini. Classifica il tipo di vino basandoti sul nome e caratteristiche."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
@@ -176,7 +176,7 @@ Rispondi con una sola parola.
         """
         try:
             prompt = f"""
-Migliora e completa questi dati di un vino italiano:
+Migliora e completa questi dati di un vino:
 
 Dati attuali:
 {json.dumps(wine_data, ensure_ascii=False, indent=2)}
@@ -186,14 +186,14 @@ Correzioni da applicare:
 2. Completa informazioni mancanti se possibile
 3. Standardizza formato nomi produttori
 4. Verifica e corregge annate
-5. Standardizza nomi regioni italiane
+5. Standardizza nomi regioni/paesi
 
 Rispondi SOLO con JSON migliorato:
 {{
     "name": "Nome Vino Corretto",
     "vintage": "2020",
     "producer": "Nome Produttore Standardizzato",
-    "region": "Regione Italiana",
+    "region": "Regione/Paese",
     "price": 25.50,
     "quantity": 12,
     "wine_type": "rosso",
@@ -204,7 +204,7 @@ Rispondi SOLO con JSON migliorato:
             response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "Sei un esperto di vini italiani. Migliora e completa dati vini con precisione e conoscenza del settore."},
+                    {"role": "system", "content": "Sei un esperto di vini. Migliora e completa dati vini con precisione e conoscenza del settore."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
@@ -228,7 +228,7 @@ Rispondi SOLO con JSON migliorato:
                 return []
             
             prompt = f"""
-Valida questi dati di vini italiani e rimuovi duplicati o dati non validi:
+Valida questi dati di vini e rimuovi duplicati o dati non validi:
 
 Vini:
 {json.dumps(wines[:10], ensure_ascii=False, indent=2)}  # Limita a 10 vini per evitare limiti
@@ -239,7 +239,6 @@ Criteri di validazione:
 3. Prezzo deve essere un numero positivo
 4. Quantità deve essere un numero positivo
 5. Rimuovi duplicati basati su nome e annata
-6. Mantieni solo vini italiani
 
 Rispondi SOLO con JSON array dei vini validi:
 [
@@ -247,7 +246,7 @@ Rispondi SOLO con JSON array dei vini validi:
         "name": "Nome Vino",
         "vintage": "2020",
         "producer": "Produttore",
-        "region": "Regione",
+        "region": "Regione/Paese",
         "price": 25.50,
         "quantity": 12,
         "wine_type": "rosso"
@@ -258,7 +257,7 @@ Rispondi SOLO con JSON array dei vini validi:
             response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": "Sei un esperto di vini italiani. Valida e filtra dati vini rimuovendo duplicati e dati non validi."},
+                    {"role": "system", "content": "Sei un esperto di vini. Valida e filtra dati vini rimuovendo duplicati e dati non validi."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,

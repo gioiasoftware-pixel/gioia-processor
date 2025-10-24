@@ -58,8 +58,11 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
         # Usa AI per validare e filtrare vini
         validated_wines = await ai_processor.validate_wine_data(wines_data)
         
-        logger.info(f"AI processed {len(validated_wines)} wines from CSV (confidence: {ai_analysis.get('confidence', 0)})")
-        return validated_wines
+        # Filtra vini (ora accetta tutti i vini)
+        filtered_wines = filter_italian_wines(validated_wines)
+        
+        logger.info(f"AI processed {len(filtered_wines)} wines from CSV (confidence: {ai_analysis.get('confidence', 0)})")
+        return filtered_wines
         
     except Exception as e:
         logger.error(f"Error processing CSV file: {e}")
@@ -116,8 +119,11 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
         # Usa AI per validare e filtrare vini
         validated_wines = await ai_processor.validate_wine_data(wines_data)
         
-        logger.info(f"AI processed {len(validated_wines)} wines from Excel (confidence: {ai_analysis.get('confidence', 0)})")
-        return validated_wines
+        # Filtra vini (ora accetta tutti i vini)
+        filtered_wines = filter_italian_wines(validated_wines)
+        
+        logger.info(f"AI processed {len(filtered_wines)} wines from Excel (confidence: {ai_analysis.get('confidence', 0)})")
+        return filtered_wines
         
     except Exception as e:
         logger.error(f"Error processing Excel file: {e}")
@@ -189,13 +195,13 @@ def classify_wine_type(text: str) -> str:
     """
     text_lower = text.lower()
     
-    if any(word in text_lower for word in ['rosso', 'red', 'nero', 'black', 'sangiovese', 'barbera', 'nebbiolo']):
+    if any(word in text_lower for word in ['rosso', 'red', 'nero', 'black', 'sangiovese', 'barbera', 'nebbiolo', 'cabernet', 'merlot', 'pinot noir', 'syrah', 'shiraz']):
         return 'rosso'
-    elif any(word in text_lower for word in ['bianco', 'white', 'chardonnay', 'pinot grigio', 'sauvignon']):
+    elif any(word in text_lower for word in ['bianco', 'white', 'chardonnay', 'pinot grigio', 'sauvignon', 'riesling', 'gewürztraminer', 'moscato']):
         return 'bianco'
-    elif any(word in text_lower for word in ['rosato', 'rosé', 'rose']):
+    elif any(word in text_lower for word in ['rosato', 'rosé', 'rose', 'pink']):
         return 'rosato'
-    elif any(word in text_lower for word in ['spumante', 'champagne', 'prosecco', 'moscato', 'frizzante']):
+    elif any(word in text_lower for word in ['spumante', 'champagne', 'prosecco', 'moscato', 'frizzante', 'sparkling', 'cava', 'crémant']):
         return 'spumante'
     else:
         return 'sconosciuto'
@@ -212,3 +218,10 @@ def clean_wine_name(name: str) -> str:
     # Rimuovi spazi multipli
     cleaned = re.sub(r'\s+', ' ', cleaned)
     return cleaned.strip()
+
+def filter_italian_wines(wines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Filtra vini per mantenere solo quelli italiani (funzione rimossa - ora accetta tutti i vini)
+    """
+    # Ora accetta tutti i vini, non solo quelli italiani
+    return wines
