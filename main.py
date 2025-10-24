@@ -1,8 +1,9 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 import asyncio
+import json
 from datetime import datetime
 from database import get_db, create_tables, save_inventory_to_db, get_inventory_status
 from config import validate_config
@@ -323,6 +324,113 @@ async def debug_logs():
         }
     except Exception as e:
         return {"error": str(e)}
+
+@app.post("/process-inventory-graphql")
+async def process_inventory_graphql(request: Request):
+    """
+    Elabora file inventario usando formato GraphQL multipart
+    """
+    try:
+        # Leggi il contenuto della richiesta
+        form = await request.form()
+        
+        # Estrai operations e map
+        operations_str = form.get("operations")
+        map_str = form.get("map")
+        
+        if not operations_str or not map_str:
+            raise HTTPException(status_code=400, detail="Missing operations or map")
+        
+        # Parse JSON
+        operations = json.loads(operations_str)
+        file_map = json.loads(map_str)
+        
+        # Estrai variabili
+        variables = operations.get("variables", {})
+        telegram_id = variables.get("telegram_id")
+        business_name = variables.get("business_name")
+        file_type = variables.get("file_type")
+        
+        # Estrai file usando la mappa
+        file_key = list(file_map.keys())[0]  # Prende la prima chiave (es. "0")
+        file = form.get(file_key)
+        
+        if not file:
+            raise HTTPException(status_code=400, detail="File not found in request")
+        
+        logger.info(f"GraphQL Processing inventory for telegram_id: {telegram_id}, business: {business_name}, type: {file_type}")
+        
+        # Usa la stessa logica dell'endpoint standard
+        return await process_inventory_logic(telegram_id, business_name, file_type, file)
+        
+    except Exception as e:
+        logger.error(f"Error in GraphQL endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def process_inventory_logic(telegram_id: int, business_name: str, file_type: str, file):
+    """
+    Logica comune per elaborazione inventario
+    """
+    start_time = datetime.utcnow()
+    
+    try:
+        # Validazione input
+        if not telegram_id or telegram_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid telegram_id")
+        
+        if not business_name or len(business_name.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Business name is required")
+        
+        if not file_type or file_type.lower() not in ["csv", "excel", "xlsx", "xls", "image", "jpg", "jpeg", "png", "photo"]:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_type}")
+        
+        # Leggi contenuto file
+        file_content = await file.read()
+        
+        if len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+        
+        # Processa file in base al tipo
+        if file_type.lower() in ["csv"]:
+            wines_data = await process_csv_file(file_content)
+        elif file_type.lower() in ["excel", "xlsx", "xls"]:
+            wines_data = await process_excel_file(file_content)
+        elif file_type.lower() in ["image", "jpg", "jpeg", "png", "photo"]:
+            wines_data = await process_image_ocr(file_content)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_type}")
+        
+        if not wines_data:
+            return {
+                "status": "error",
+                "error": "No wines found in file",
+                "telegram_id": telegram_id
+            }
+        
+        # Salva nel database
+        await save_inventory_to_db(telegram_id, business_name, wines_data)
+        
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        
+        logger.info(f"Inventory processed successfully: {len(wines_data)} wines in {processing_time:.2f}s")
+        
+        return {
+            "status": "success",
+            "total_wines": len(wines_data),
+            "business_name": business_name,
+            "telegram_id": telegram_id,
+            "processing_time": processing_time
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing inventory: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "telegram_id": telegram_id
+        }
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))
