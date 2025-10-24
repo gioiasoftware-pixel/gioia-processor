@@ -11,6 +11,7 @@ from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
 from ai_processor import ai_processor
 import logging
+from typing import Optional
 
 # Configurazione logging
 logging.basicConfig(level=logging.INFO)
@@ -100,19 +101,39 @@ async def health_check():
         }
 
 @app.post("/process-inventory")
-async def process_inventory(
-    telegram_id: int = Form(...),
-    business_name: str = Form(...),
-    file_type: str = Form(...),
-    file: UploadFile = File(...)
-):
+async def process_inventory(request: Request):
     """
-    Elabora file inventario e salva nel database
+    Elabora file inventario usando formato GraphQL multipart
     """
-    start_time = datetime.utcnow()
-    
     try:
-        logger.info(f"Processing inventory for telegram_id: {telegram_id}, business: {business_name}, type: {file_type}")
+        # Leggi il contenuto della richiesta
+        form = await request.form()
+        
+        # Estrai operations e map
+        operations_str = form.get("operations")
+        map_str = form.get("map")
+        
+        if not operations_str or not map_str:
+            raise HTTPException(status_code=400, detail="Missing operations or map")
+        
+        # Parse JSON
+        operations = json.loads(operations_str)
+        file_map = json.loads(map_str)
+        
+        # Estrai variabili
+        variables = operations.get("variables", {})
+        telegram_id = variables.get("telegram_id")
+        business_name = variables.get("business_name")
+        file_type = variables.get("file_type")
+        
+        # Estrai file usando la mappa
+        file_key = list(file_map.keys())[0]  # Prende la prima chiave (es. "0")
+        file = form.get(file_key)
+        
+        if not file:
+            raise HTTPException(status_code=400, detail="File not found in request")
+        
+        logger.info(f"GraphQL Processing inventory for telegram_id: {telegram_id}, business: {business_name}, type: {file_type}")
         
         # Validazione input
         if not telegram_id or telegram_id <= 0:
