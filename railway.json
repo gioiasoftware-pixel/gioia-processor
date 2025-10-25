@@ -1,12 +1,9 @@
 {
   "build": {
-    "builder": "NIXPACKS"
+    "builder": "Python"
   },
-  "deploy": {
-    "startCommand": "python start_processor.py",
-    "healthcheckPath": "/health",
-    "healthcheckTimeout": 100,
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
+  "start": {
+    "web": "python start_processor.py",
+    "worker": "python consumer.py"
   }
 }
