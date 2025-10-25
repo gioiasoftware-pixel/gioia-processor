@@ -2,11 +2,14 @@
 import os
 import httpx
 import logging
+import asyncio
 from messaging.stream import consume_forever
 from database import save_inventory_to_db
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
 
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -66,7 +69,12 @@ async def main():
     # consumer_name: usa un identificatore dell'istanza (es. hostname) per scalare a N worker
     consumer_name = os.getenv("CONSUMER_NAME", "processor-1")
     logger.info(f"Starting consumer: {consumer_name}")
-    await consume_forever(process_inventory_message, consumer_name)
+    
+    try:
+        await consume_forever(process_inventory_message, consumer_name)
+    except Exception as e:
+        logger.error(f"Consumer error: {e}")
+        raise
 
 if __name__ == "__main__":
     import asyncio
