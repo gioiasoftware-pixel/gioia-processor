@@ -159,10 +159,10 @@ async def process_inventory(
             raise HTTPException(status_code=422, detail=f"Error processing {file_type} file: {str(processing_error)}")
         
         # Salva nel database
-        inventory_id = None
+        save_result = None
         try:
             async for db in get_db():
-                inventory_id = await save_inventory_to_db(db, telegram_id, business_name, wines_data)
+                save_result = await save_inventory_to_db(db, telegram_id, business_name, wines_data)
                 break
         except Exception as db_error:
             logger.error(f"Database error: {db_error}")
@@ -170,14 +170,30 @@ async def process_inventory(
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
-        logger.info(f"Successfully processed {len(wines_data)} wines for inventory {inventory_id} in {processing_time:.2f}s")
+        # Estrai informazioni dal risultato
+        if isinstance(save_result, dict):
+            inventory_id = save_result.get("user_id")
+            saved_count = save_result.get("saved_count", len(wines_data))
+            error_count = save_result.get("error_count", 0)
+            errors_log = save_result.get("errors", [])
+        else:
+            # Fallback per compatibilità vecchio formato
+            inventory_id = save_result
+            saved_count = len(wines_data)
+            error_count = 0
+            errors_log = []
+        
+        logger.info(f"Successfully processed {saved_count}/{len(wines_data)} wines for inventory {inventory_id} in {processing_time:.2f}s")
+        if error_count > 0:
+            logger.warning(f"{error_count} wines saved with warnings/errors")
         
         # Informazioni AI per debugging
         ai_enabled = "yes" if os.getenv("OPENAI_API_KEY") else "no"
         
-        return {
+        response = {
             "status": "success",
             "total_wines": len(wines_data),
+            "saved_wines": saved_count,
             "business_name": business_name,
             "telegram_id": telegram_id,
             "inventory_id": inventory_id,
@@ -187,6 +203,14 @@ async def process_inventory(
             "file_type": file_type,
             "file_size_bytes": len(file_content)
         }
+        
+        # Aggiungi informazioni su errori se presenti
+        if error_count > 0:
+            response["warnings_count"] = error_count
+            response["warnings"] = errors_log[:10]  # Limita a 10 per non appesantire la risposta
+            response["message"] = f"Salvati {saved_count} vini su {len(wines_data)}. {error_count} vini salvati con warning/errori (verificare note)."
+        
+        return response
         
     except HTTPException:
         # Re-raise HTTP exceptions
@@ -410,7 +434,9 @@ async def process_inventory_logic(telegram_id: int, business_name: str, file_typ
             }
         
         # Salva nel database
-        await save_inventory_to_db(telegram_id, business_name, wines_data)
+        async for db in get_db():
+            save_result = await save_inventory_to_db(db, telegram_id, business_name, wines_data)
+            break
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
