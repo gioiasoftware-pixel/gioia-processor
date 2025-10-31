@@ -174,20 +174,59 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
             user.business_name = business_name
             user.onboarding_completed = True
         
-        # Aggiungi vini
+        # Normalizza e aggiungi vini
+        saved_count = 0
         for wine_data in wines_data:
-            wine = Wine(
-                user_id=user.id,
-                name=wine_data.get("name", ""),
-                vintage=wine_data.get("vintage"),
-                producer=wine_data.get("producer"),
-                region=wine_data.get("region"),
-                selling_price=wine_data.get("price"),
-                quantity=wine_data.get("quantity", 1),
-                wine_type=wine_data.get("wine_type"),
-                notes=wine_data.get("notes")
-            )
-            session.add(wine)
+            try:
+                # Normalizza vintage: converti stringa a int
+                vintage = wine_data.get("vintage")
+                if vintage:
+                    if isinstance(vintage, str):
+                        # Estrai solo numeri (anni 1900-2099)
+                        import re
+                        vintage_match = re.search(r'\b(19|20)\d{2}\b', str(vintage))
+                        vintage = int(vintage_match.group()) if vintage_match else None
+                    elif isinstance(vintage, (int, float)):
+                        vintage = int(vintage)
+                    else:
+                        vintage = None
+                
+                # Normalizza quantity: converti a int
+                quantity = wine_data.get("quantity", 1)
+                if isinstance(quantity, str):
+                    import re
+                    qty_match = re.search(r'\d+', str(quantity))
+                    quantity = int(qty_match.group()) if qty_match else 1
+                else:
+                    quantity = int(quantity) if quantity else 1
+                
+                # Normalizza price: converti a float
+                price = wine_data.get("price")
+                if price:
+                    if isinstance(price, str):
+                        import re
+                        price_clean = re.sub(r'[^\d.,]', '', str(price).replace(',', '.'))
+                        price = float(price_clean) if price_clean else None
+                    else:
+                        price = float(price) if price else None
+                
+                wine = Wine(
+                    user_id=user.id,
+                    name=wine_data.get("name", ""),
+                    vintage=vintage,  # Ora è int o None
+                    producer=wine_data.get("producer"),
+                    region=wine_data.get("region"),
+                    selling_price=price,  # Ora è float o None
+                    quantity=quantity,  # Ora è int
+                    wine_type=wine_data.get("wine_type"),
+                    notes=wine_data.get("notes"),
+                    description=wine_data.get("description")
+                )
+                session.add(wine)
+                saved_count += 1
+            except Exception as e:
+                logger.warning(f"Error normalizing wine data {wine_data.get('name', 'Unknown')}: {e}")
+                continue
         
         await session.commit()
         logger.info(f"Saved {len(wines_data)} wines for user {telegram_id}")

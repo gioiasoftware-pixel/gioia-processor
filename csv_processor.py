@@ -199,7 +199,8 @@ def extract_wine_data_from_row(row: pd.Series) -> Dict[str, Any]:
         # Estrai solo numeri per l'annata
         vintage_match = re.search(r'\b(19|20)\d{2}\b', vintage)
         if vintage_match:
-            wine_data['vintage'] = vintage_match.group()
+            # Salva come int direttamente
+            wine_data['vintage'] = int(vintage_match.group())
     
     # Produttore
     if 'producer' in row and pd.notna(row['producer']):
