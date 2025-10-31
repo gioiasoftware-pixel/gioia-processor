@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 import uvicorn
 import os
 import asyncio
@@ -61,7 +62,7 @@ async def health_check():
         try:
             async for db in get_db():
                 # Test connessione database
-                await db.execute("SELECT 1")
+                await db.execute(text("SELECT 1"))
                 break
         except Exception as e:
             db_status = f"error: {str(e)[:100]}"
@@ -292,7 +293,7 @@ async def test_database_connection():
     """Test connessione database"""
     try:
         async for db in get_db():
-            await db.execute("SELECT 1")
+            await db.execute(text("SELECT 1"))
             return {"status": "connected", "error": None}
     except Exception as e:
         return {"status": "error", "error": str(e)}
