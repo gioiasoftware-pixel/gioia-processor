@@ -20,27 +20,54 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
         csv_text = df.to_string()
         ai_analysis = await ai_processor.analyze_csv_structure(csv_text)
         
-        # Applica mapping AI se disponibile
+        # Salva colonne originali
+        original_columns = list(df.columns)
+        logger.info(f"Original columns: {original_columns}")
+        
+        # Crea mapping per rinominare colonne
+        # AI restituisce: {'name': 'Wine Name', 'vintage': 'Vintage', ...}
+        # Pandas rename vuole: {'Wine Name': 'name', 'Vintage': 'vintage', ...}
+        rename_mapping = {}
+        
         if ai_analysis.get('column_mapping'):
-            column_mapping = ai_analysis['column_mapping']
-            logger.info(f"AI detected column mapping: {column_mapping}")
+            ai_mapping = ai_analysis['column_mapping']
+            logger.info(f"AI detected column mapping: {ai_mapping}")
+            
+            # Inverti mapping AI: da {'name': 'Wine Name'} a {'Wine Name': 'name'}
+            for standard_name, original_col_name in ai_mapping.items():
+                # Cerca colonna originale (case-sensitive prima)
+                if original_col_name in original_columns:
+                    rename_mapping[original_col_name] = standard_name
+                else:
+                    # Fallback case-insensitive
+                    for orig_col in original_columns:
+                        if orig_col.lower().strip() == original_col_name.lower().strip():
+                            rename_mapping[orig_col] = standard_name
+                            break
+            
+            logger.info(f"Rename mapping (inverted): {rename_mapping}")
         else:
-            # Fallback a mapping tradizionale
-            column_mapping = {
-                'nome': 'name', 'vino': 'name', 'wine': 'name',
-                'annata': 'vintage', 'year': 'vintage',
-                'produttore': 'producer', 'producer': 'producer',
+            # Fallback: normalizza prima, poi mappa
+            df.columns = df.columns.str.lower().str.strip()
+            rename_mapping = {
+                'nome': 'name', 'vino': 'name', 'wine': 'name', 'wine name': 'name',
+                'annata': 'vintage', 'year': 'vintage', 'vintage': 'vintage',
+                'produttore': 'producer', 'producer': 'producer', 'winery': 'producer',
                 'regione': 'region', 'region': 'region',
-                'prezzo': 'price', 'price': 'price',
-                'quantità': 'quantity', 'qty': 'quantity',
-                'tipo': 'wine_type', 'type': 'wine_type'
+                'prezzo': 'price', 'price': 'price', 'cost (eur)': 'price', 'cost': 'price',
+                'quantità': 'quantity', 'qty': 'quantity', 'quantity': 'quantity',
+                'tipo': 'wine_type', 'type': 'wine_type', "grape(s)": 'wine_type', 'grape': 'wine_type'
             }
         
-        # Normalizza nomi colonne
-        df.columns = df.columns.str.lower().str.strip()
+        # Rinomina colonne usando il mapping (su colonne originali se mapping AI)
+        if rename_mapping:
+            df = df.rename(columns=rename_mapping)
         
-        # Rinomina colonne
-        df = df.rename(columns=column_mapping)
+        # Se non era mapping AI, normalizza le colonne rimanenti
+        if not ai_analysis.get('column_mapping'):
+            df.columns = df.columns.str.lower().str.strip()
+        
+        logger.info(f"Final columns after mapping: {list(df.columns)}")
         
         wines_data = []
         
@@ -81,27 +108,54 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
         excel_text = df.to_string()
         ai_analysis = await ai_processor.analyze_csv_structure(excel_text)
         
-        # Applica mapping AI se disponibile
+        # Salva colonne originali
+        original_columns = list(df.columns)
+        logger.info(f"Original columns: {original_columns}")
+        
+        # Crea mapping per rinominare colonne
+        # AI restituisce: {'name': 'Wine Name', 'vintage': 'Vintage', ...}
+        # Pandas rename vuole: {'Wine Name': 'name', 'Vintage': 'vintage', ...}
+        rename_mapping = {}
+        
         if ai_analysis.get('column_mapping'):
-            column_mapping = ai_analysis['column_mapping']
-            logger.info(f"AI detected column mapping: {column_mapping}")
+            ai_mapping = ai_analysis['column_mapping']
+            logger.info(f"AI detected column mapping: {ai_mapping}")
+            
+            # Inverti mapping AI: da {'name': 'Wine Name'} a {'Wine Name': 'name'}
+            for standard_name, original_col_name in ai_mapping.items():
+                # Cerca colonna originale (case-sensitive prima)
+                if original_col_name in original_columns:
+                    rename_mapping[original_col_name] = standard_name
+                else:
+                    # Fallback case-insensitive
+                    for orig_col in original_columns:
+                        if orig_col.lower().strip() == original_col_name.lower().strip():
+                            rename_mapping[orig_col] = standard_name
+                            break
+            
+            logger.info(f"Rename mapping (inverted): {rename_mapping}")
         else:
-            # Fallback a mapping tradizionale
-            column_mapping = {
-                'nome': 'name', 'vino': 'name', 'wine': 'name',
-                'annata': 'vintage', 'year': 'vintage',
-                'produttore': 'producer', 'producer': 'producer',
+            # Fallback: normalizza prima, poi mappa
+            df.columns = df.columns.str.lower().str.strip()
+            rename_mapping = {
+                'nome': 'name', 'vino': 'name', 'wine': 'name', 'wine name': 'name',
+                'annata': 'vintage', 'year': 'vintage', 'vintage': 'vintage',
+                'produttore': 'producer', 'producer': 'producer', 'winery': 'producer',
                 'regione': 'region', 'region': 'region',
-                'prezzo': 'price', 'price': 'price',
-                'quantità': 'quantity', 'qty': 'quantity',
-                'tipo': 'wine_type', 'type': 'wine_type'
+                'prezzo': 'price', 'price': 'price', 'cost (eur)': 'price', 'cost': 'price',
+                'quantità': 'quantity', 'qty': 'quantity', 'quantity': 'quantity',
+                'tipo': 'wine_type', 'type': 'wine_type', "grape(s)": 'wine_type', 'grape': 'wine_type'
             }
         
-        # Normalizza nomi colonne
-        df.columns = df.columns.str.lower().str.strip()
+        # Rinomina colonne usando il mapping (su colonne originali se mapping AI)
+        if rename_mapping:
+            df = df.rename(columns=rename_mapping)
         
-        # Rinomina colonne
-        df = df.rename(columns=column_mapping)
+        # Se non era mapping AI, normalizza le colonne rimanenti
+        if not ai_analysis.get('column_mapping'):
+            df.columns = df.columns.str.lower().str.strip()
+        
+        logger.info(f"Final columns after mapping: {list(df.columns)}")
         
         wines_data = []
         
