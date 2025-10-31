@@ -34,3 +34,4 @@ def validate_config():
     logger.info("✅ Configurazione processor validata con successo")
     return True
 
+
