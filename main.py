@@ -7,7 +7,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime
-from database import get_db, create_tables, save_inventory_to_db, get_inventory_status, ProcessingJob, delete_user_schema, get_user_schema_name
+from database import get_db, create_tables, save_inventory_to_db, get_inventory_status, ProcessingJob, ensure_user_tables, get_user_table_name
 from config import validate_config
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
@@ -370,21 +370,75 @@ async def get_job_status(job_id: str):
         logger.error(f"Error getting job status: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.delete("/schema/{telegram_id}")
-async def delete_schema(telegram_id: int, business_name: str = Query(...)):
+@app.post("/create-tables")
+async def create_user_tables(telegram_id: int = Form(...), business_name: str = Form(...)):
     """
-    Cancella schema database per utente.
-    SOLO PER telegram_id = 927230913 (admin)
+    Crea le 4 tabelle per un utente quando viene dato il nome del locale.
     
-    Uso: DELETE /schema/{telegram_id}?business_name=NomeLocale
+    Tabelle create:
+    1. "{telegram_id}/{business_name} INVENTARIO"
+    2. "{telegram_id}/{business_name} INVENTARIO backup"
+    3. "{telegram_id}/{business_name} LOG interazione"
+    4. "{telegram_id}/{business_name} Consumi e rifornimenti"
+    
+    Chiamato dal bot quando l'utente completa l'onboarding.
     """
     try:
         async for db in get_db():
-            result = await delete_user_schema(db, telegram_id, business_name)
-            return result
+            tables = await ensure_user_tables(db, telegram_id, business_name)
+            return {
+                "status": "success",
+                "message": f"Tabelle create per {telegram_id}/{business_name}",
+                "tables": tables
+            }
     except Exception as e:
-        logger.error(f"Error deleting schema for telegram_id {telegram_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Error deleting schema: {str(e)}")
+        logger.error(f"Error creating tables for telegram_id {telegram_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creating tables: {str(e)}")
+
+@app.delete("/tables/{telegram_id}")
+async def delete_user_tables(telegram_id: int, business_name: str = Query(...)):
+    """
+    Cancella tutte le tabelle utente.
+    SOLO PER telegram_id = 927230913 (admin)
+    
+    Uso: DELETE /tables/{telegram_id}?business_name=NomeLocale
+    """
+    ADMIN_TELEGRAM_ID = 927230913
+    if telegram_id != ADMIN_TELEGRAM_ID:
+        raise HTTPException(status_code=403, detail="Non autorizzato. Solo l'amministratore può cancellare tabelle.")
+    
+    try:
+        async for db in get_db():
+            # Ottieni nomi tabelle
+            table_inventario = get_user_table_name(telegram_id, business_name, "INVENTARIO")
+            table_backup = get_user_table_name(telegram_id, business_name, "INVENTARIO backup")
+            table_log = get_user_table_name(telegram_id, business_name, "LOG interazione")
+            table_consumi = get_user_table_name(telegram_id, business_name, "Consumi e rifornimenti")
+            
+            # Cancella tabelle
+            from sqlalchemy import text as sql_text
+            
+            drop_queries = [
+                sql_text(f'DROP TABLE IF EXISTS {table_inventario} CASCADE'),
+                sql_text(f'DROP TABLE IF EXISTS {table_backup} CASCADE'),
+                sql_text(f'DROP TABLE IF EXISTS {table_log} CASCADE'),
+                sql_text(f'DROP TABLE IF EXISTS {table_consumi} CASCADE')
+            ]
+            
+            for query in drop_queries:
+                await db.execute(query)
+            
+            await db.commit()
+            
+            logger.info(f"ADMIN {telegram_id} deleted tables for {business_name}")
+            return {
+                "success": True,
+                "message": f"Tabelle cancellate per {telegram_id}/{business_name}",
+                "telegram_id": telegram_id
+            }
+    except Exception as e:
+        logger.error(f"Error deleting tables for telegram_id {telegram_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting tables: {str(e)}")
 
 @app.get("/status/{telegram_id}")
 async def get_status(telegram_id: int):

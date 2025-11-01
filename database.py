@@ -33,14 +33,16 @@ class User(Base):
     email = Column(String(200))
     onboarding_completed = Column(Boolean, default=False)
     
-    # Relazioni rimosse - i vini sono ora in schemi separati per utente
+    # Relazioni rimosse - i vini sono ora in tabelle dinamiche nello schema public
 
 # NOTA: I modelli Wine, InventoryBackup, InventoryLog NON sono più modelli Base
-# Vengono creati dinamicamente negli schemi utente usando SQL diretto in ensure_user_schema()
-# Questo garantisce isolamento completo dei dati per ogni utente.
-#
-# Le tabelle wines, inventory_backups, inventory_logs vengono create nello schema:
-# user_{telegram_id}_{business_name_sanitized}
+# Vengono create dinamicamente nello schema public usando SQL diretto in ensure_user_tables()
+# 
+# Le tabelle vengono create con nomi dinamici:
+# "{telegram_id}/{business_name} INVENTARIO"
+# "{telegram_id}/{business_name} INVENTARIO backup"
+# "{telegram_id}/{business_name} LOG interazione"
+# "{telegram_id}/{business_name} Consumi e rifornimenti"
 # con foreign key verso public.users(id)
 
 class ProcessingJob(Base):
@@ -100,95 +102,61 @@ async def get_db():
         finally:
             await session.close()
 
-def sanitize_schema_name(name: str) -> str:
+def get_user_table_name(telegram_id: int, business_name: str, table_type: str) -> str:
     """
-    Sanitizza nome per schema PostgreSQL.
-    Rimuove caratteri speciali, converte in lowercase, sostituisce spazi con underscore.
-    Limita a 63 caratteri (limite PostgreSQL per identificatori).
+    Genera nome tabella nel formato: "{telegram_id}/{business_name} {table_type}"
+    
+    Args:
+        telegram_id: ID Telegram dell'utente
+        business_name: Nome del locale
+        table_type: Tipo tabella ("INVENTARIO", "INVENTARIO backup", "LOG interazione", "Consumi e rifornimenti")
+    
+    Returns:
+        Nome tabella quotato per PostgreSQL (es. "927230913/Upload Manuale INVENTARIO")
     """
-    if not name:
-        return "unnamed"
+    if not business_name:
+        business_name = "Upload Manuale"
     
-    # Converti in lowercase
-    sanitized = name.lower()
-    
-    # Rimuovi caratteri speciali (mantieni solo lettere, numeri, underscore, spazi)
-    sanitized = re.sub(r'[^a-z0-9_\s]', '', sanitized)
-    
-    # Sostituisci spazi multipli con underscore singolo
-    sanitized = re.sub(r'\s+', '_', sanitized)
-    
-    # Rimuovi underscore multipli
-    sanitized = re.sub(r'_+', '_', sanitized)
-    
-    # Rimuovi underscore iniziali/finali
-    sanitized = sanitized.strip('_')
-    
-    # Limita a 63 caratteri (limite PostgreSQL)
-    if len(sanitized) > 63:
-        sanitized = sanitized[:63].rstrip('_')
-    
-    # Se vuoto dopo sanitizzazione, usa default
-    if not sanitized:
-        sanitized = "unnamed"
-    
-    return sanitized
+    table_name = f'"{telegram_id}/{business_name} {table_type}"'
+    return table_name
 
-def get_user_schema_name(telegram_id: int, business_name: str) -> str:
+async def ensure_user_tables(session, telegram_id: int, business_name: str) -> dict:
     """
-    Genera nome schema per utente: user_{telegram_id}_{business_name_sanitized}
-    """
-    business_sanitized = sanitize_schema_name(business_name)
-    schema_name = f"user_{telegram_id}_{business_sanitized}"
+    Crea le 4 tabelle utente nello schema public se non esistono.
     
-    # Limita lunghezza totale schema name (PostgreSQL limita a 63 caratteri)
-    if len(schema_name) > 63:
-        # Se troppo lungo, tronca business_name
-        max_business_len = 63 - len(f"user_{telegram_id}_")
-        business_sanitized = business_sanitized[:max_business_len].rstrip('_')
-        schema_name = f"user_{telegram_id}_{business_sanitized}"
+    Tabelle create:
+    1. "{telegram_id}/{business_name} INVENTARIO" - Inventario vini
+    2. "{telegram_id}/{business_name} INVENTARIO backup" - Backup inventario
+    3. "{telegram_id}/{business_name} LOG interazione" - Log interazioni bot
+    4. "{telegram_id}/{business_name} Consumi e rifornimenti" - Consumi e rifornimenti
     
-    return schema_name
-
-async def ensure_user_schema(session, telegram_id: int, business_name: str) -> str:
+    Ritorna dict con nomi tabelle create.
     """
-    Crea schema utente se non esiste e crea tutte le tabelle usando SQL diretto.
-    Ritorna nome schema creato.
-    """
-    schema_name = get_user_schema_name(telegram_id, business_name)
+    if not business_name:
+        business_name = "Upload Manuale"
     
     try:
-        # Verifica se schema esiste
-        check_schema = sql_text(f"""
-            SELECT schema_name 
-            FROM information_schema.schemata 
-            WHERE schema_name = :schema_name
-        """)
-        result = await session.execute(check_schema, {"schema_name": schema_name})
-        exists = result.scalar_one_or_none()
+        # Nomi tabelle
+        table_inventario = get_user_table_name(telegram_id, business_name, "INVENTARIO")
+        table_backup = get_user_table_name(telegram_id, business_name, "INVENTARIO backup")
+        table_log = get_user_table_name(telegram_id, business_name, "LOG interazione")
+        table_consumi = get_user_table_name(telegram_id, business_name, "Consumi e rifornimenti")
         
-        if not exists:
-            # Crea schema
-            create_schema = sql_text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
-            await session.execute(create_schema)
-            await session.commit()
-            logger.info(f"Created schema: {schema_name}")
-        
-        # Verifica se tabella wines esiste nello schema
-        check_table = sql_text(f"""
+        # Verifica se almeno una tabella esiste (controlla INVENTARIO come riferimento)
+        # PostgreSQL usa il nome tabella senza virgolette per il check in information_schema
+        table_name_check = f"{telegram_id}/{business_name} INVENTARIO"
+        check_table = sql_text("""
             SELECT table_name 
             FROM information_schema.tables 
-            WHERE table_schema = :schema_name AND table_name = 'wines'
+            WHERE table_schema = 'public' AND table_name = :table_name
         """)
-        result = await session.execute(check_table, {"schema_name": schema_name})
+        result = await session.execute(check_table, {"table_name": table_name_check})
         table_exists = result.scalar_one_or_none()
         
         if not table_exists:
-            # Crea tabelle usando SQL diretto (evita problemi con ForeignKey di SQLAlchemy)
-            
-            # Tabella wines
-            create_wines = sql_text(f"""
-                CREATE TABLE IF NOT EXISTS "{schema_name}".wines (
+            # Crea tabella INVENTARIO
+            create_inventario = sql_text(f"""
+                CREATE TABLE IF NOT EXISTS {table_inventario} (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
                     name VARCHAR(200) NOT NULL,
@@ -210,11 +178,11 @@ async def ensure_user_schema(session, telegram_id: int, business_name: str) -> s
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            await session.execute(create_wines)
+            await session.execute(create_inventario)
             
-            # Tabella inventory_backups
-            create_backups = sql_text(f"""
-                CREATE TABLE IF NOT EXISTS "{schema_name}".inventory_backups (
+            # Crea tabella INVENTARIO backup
+            create_backup = sql_text(f"""
+                CREATE TABLE IF NOT EXISTS {table_backup} (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
                     backup_name VARCHAR(200) NOT NULL,
@@ -223,11 +191,24 @@ async def ensure_user_schema(session, telegram_id: int, business_name: str) -> s
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            await session.execute(create_backups)
+            await session.execute(create_backup)
             
-            # Tabella inventory_logs
-            create_logs = sql_text(f"""
-                CREATE TABLE IF NOT EXISTS "{schema_name}".inventory_logs (
+            # Crea tabella LOG interazione
+            create_log = sql_text(f"""
+                CREATE TABLE IF NOT EXISTS {table_log} (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                    interaction_type VARCHAR(50) NOT NULL,
+                    interaction_data TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await session.execute(create_log)
+            
+            # Crea tabella Consumi e rifornimenti
+            create_consumi = sql_text(f"""
+                CREATE TABLE IF NOT EXISTS {table_consumi} (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
                     wine_name VARCHAR(200) NOT NULL,
@@ -240,16 +221,22 @@ async def ensure_user_schema(session, telegram_id: int, business_name: str) -> s
                     movement_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            await session.execute(create_logs)
+            await session.execute(create_consumi)
             
             await session.commit()
-            logger.info(f"Created tables in schema {schema_name}: wines, inventory_backups, inventory_logs")
+            logger.info(f"Created tables for {telegram_id}/{business_name}: INVENTARIO, INVENTARIO backup, LOG interazione, Consumi e rifornimenti")
+        else:
+            logger.info(f"Tables already exist for {telegram_id}/{business_name}")
         
-        logger.info(f"Ensured schema {schema_name} with all tables")
-        return schema_name
+        return {
+            "inventario": table_inventario,
+            "backup": table_backup,
+            "log": table_log,
+            "consumi": table_consumi
+        }
         
     except Exception as e:
-        logger.error(f"Error ensuring user schema {schema_name}: {e}")
+        logger.error(f"Error ensuring user tables for {telegram_id}/{business_name}: {e}")
         raise
 
 async def create_tables():
@@ -266,7 +253,7 @@ async def create_tables():
             await conn.run_sync(Base.metadata.create_all)
         
         logger.info("Database tables created successfully (public schema): users, processing_jobs")
-        logger.info("Note: Wine, InventoryBackup, InventoryLog are created per-user in separate schemas via ensure_user_schema()")
+        logger.info("Note: Tabelle inventario vengono create per-utente nello schema public via ensure_user_tables()")
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")
         raise
@@ -299,13 +286,12 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
             user.business_name = business_name
             user.onboarding_completed = True
         
-        # Assicura che schema utente esista
-        user_schema = await ensure_user_schema(session, telegram_id, business_name)
+        # Assicura che tabelle utente esistano
+        user_tables = await ensure_user_tables(session, telegram_id, business_name)
+        table_inventario = user_tables["inventario"]
+        table_backup = user_tables["backup"]
         
-        # Imposta search_path per questa sessione (opzionale, usiamo qualificazione esplicita)
-        # await session.execute(sql_text(f'SET search_path TO "{user_schema}", public'))
-        
-        # Normalizza e aggiungi vini nello schema utente
+        # Normalizza e aggiungi vini nella tabella INVENTARIO
         saved_count = 0
         error_count = 0
         errors_log = []
@@ -377,6 +363,28 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                         warnings.append(f"Errore conversione prezzo '{price_original}': {e} - salvato senza prezzo")
                         price = None
                 
+                # Normalizza alcohol_content: converti stringa con % a float
+                alcohol_content = wine_data.get("alcohol_content")
+                alcohol_original = alcohol_content
+                if alcohol_content:
+                    try:
+                        if isinstance(alcohol_content, str):
+                            # Rimuovi % e altri caratteri, mantieni solo numeri e punto/virgola
+                            import re
+                            alcohol_clean = re.sub(r'[^\d.,]', '', str(alcohol_content).replace(',', '.'))
+                            alcohol_content = float(alcohol_clean) if alcohol_clean else None
+                            if alcohol_content is None:
+                                warnings.append(f"Gradazione alcolica '{alcohol_original}' non valida - salvato senza gradazione")
+                            elif alcohol_content < 0 or alcohol_content > 100:
+                                warnings.append(f"Gradazione alcolica {alcohol_content}% fuori range - salvato comunque")
+                        else:
+                            alcohol_content = float(alcohol_content) if alcohol_content else None
+                            if alcohol_content and (alcohol_content < 0 or alcohol_content > 100):
+                                warnings.append(f"Gradazione alcolica {alcohol_content}% fuori range - salvato comunque")
+                    except (ValueError, TypeError) as e:
+                        warnings.append(f"Errore conversione gradazione alcolica '{alcohol_original}': {e} - salvato senza gradazione")
+                        alcohol_content = None
+                
                 # Prepara note con errori/warning
                 notes_parts = []
                 if wine_data.get("notes"):
@@ -392,9 +400,9 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                 
                 combined_notes = "\n".join(notes_parts) if notes_parts else None
                 
-                # Salva vino nello schema utente usando SQL diretto
+                # Salva vino nella tabella INVENTARIO usando SQL diretto
                 insert_wine = sql_text(f"""
-                    INSERT INTO "{user_schema}".wines 
+                    INSERT INTO {table_inventario} 
                     (user_id, name, producer, vintage, grape_variety, region, country, 
                      wine_type, classification, quantity, min_quantity, cost_price, selling_price, 
                      alcohol_content, description, notes, created_at, updated_at)
@@ -419,7 +427,7 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                     "min_quantity": wine_data.get("min_quantity", 0),
                     "cost_price": wine_data.get("cost_price"),
                     "selling_price": price,
-                    "alcohol_content": wine_data.get("alcohol_content"),
+                    "alcohol_content": alcohol_content,
                     "description": wine_data.get("description"),
                     "notes": combined_notes,
                     "created_at": datetime.utcnow(),
@@ -453,7 +461,7 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                         error_note = f"{wine_data.get('notes')}\n\n{error_note}"
                     
                     insert_wine_error = sql_text(f"""
-                        INSERT INTO "{user_schema}".wines 
+                        INSERT INTO {table_inventario} 
                         (user_id, name, producer, vintage, region, wine_type, quantity, notes, description, created_at, updated_at)
                         VALUES 
                         (:user_id, :name, :producer, :vintage, :region, :wine_type, :quantity, :notes, :description, :created_at, :updated_at)
@@ -479,13 +487,37 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                     logger.error(f"Impossibile salvare vino {wine_data.get('name', 'Unknown')} anche con dati parziali: {save_error}")
                     continue
         
+        # Crea backup automatico dopo il salvataggio
+        import json
+        backup_data = json.dumps([{
+            "name": w.get("name"),
+            "producer": w.get("producer"),
+            "vintage": w.get("vintage"),
+            "quantity": w.get("quantity", 0),
+            "price": w.get("price")
+        } for w in wines_data], ensure_ascii=False, indent=2)
+        
+        insert_backup = sql_text(f"""
+            INSERT INTO {table_backup}
+            (user_id, backup_name, backup_data, backup_type, created_at)
+            VALUES
+            (:user_id, :backup_name, :backup_data, :backup_type, :created_at)
+        """)
+        await session.execute(insert_backup, {
+            "user_id": user.id,
+            "backup_name": f"Inventario giorno 0 - {business_name}",
+            "backup_data": backup_data,
+            "backup_type": "initial",
+            "created_at": datetime.utcnow()
+        })
+        
         await session.commit()
         
         if error_count > 0:
-            logger.warning(f"Saved {saved_count} wines for user {telegram_id} in schema {user_schema}, {error_count} con warning/errori")
+            logger.warning(f"Saved {saved_count} wines for user {telegram_id}/{business_name}, {error_count} con warning/errori")
             logger.warning(f"Errors summary: {errors_log}")
         else:
-            logger.info(f"Saved {saved_count} wines for user {telegram_id} in schema {user_schema} without errors")
+            logger.info(f"Saved {saved_count} wines for user {telegram_id}/{business_name} without errors")
         
         return {
             "user_id": user.id,
@@ -493,7 +525,7 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
             "total_count": len(wines_data),
             "error_count": error_count,
             "errors": errors_log,
-            "schema_name": user_schema
+            "table_name": table_inventario
         }
         
     except Exception as e:
@@ -502,7 +534,7 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         raise
 
 async def get_user_inventories(session, telegram_id: int):
-    """Ottieni inventari di un utente dallo schema specifico"""
+    """Ottieni inventari di un utente dalla tabella INVENTARIO"""
     try:
         from sqlalchemy import select
         
@@ -514,11 +546,11 @@ async def get_user_inventories(session, telegram_id: int):
         if not user or not user.business_name:
             return []
         
-        # Ottieni nome schema utente
-        user_schema = get_user_schema_name(telegram_id, user.business_name)
+        # Ottieni nome tabella INVENTARIO
+        table_inventario = get_user_table_name(telegram_id, user.business_name, "INVENTARIO")
         
-        # Query vini dallo schema utente
-        select_wines = sql_text(f'SELECT * FROM "{user_schema}".wines WHERE user_id = :user_id ORDER BY created_at DESC')
+        # Query vini dalla tabella INVENTARIO
+        select_wines = sql_text(f'SELECT * FROM {table_inventario} WHERE user_id = :user_id ORDER BY created_at DESC')
         result = await session.execute(select_wines, {"user_id": user.id})
         
         # Converti risultati in dizionari
@@ -549,11 +581,11 @@ async def get_user_inventories(session, telegram_id: int):
         return wines
     except Exception as e:
         logger.error(f"Error getting user inventories: {e}")
-        # Se schema non esiste, ritorna lista vuota
+        # Se tabella non esiste, ritorna lista vuota
         return []
 
 async def get_inventory_status(session, telegram_id: int):
-    """Ottieni stato elaborazione per utente dallo schema specifico"""
+    """Ottieni stato elaborazione per utente dalla tabella INVENTARIO"""
     try:
         from sqlalchemy import select
         
@@ -567,21 +599,22 @@ async def get_inventory_status(session, telegram_id: int):
                 "total_wines": 0,
                 "onboarding_completed": False,
                 "status": "not_found",
-                "schema_name": None
+                "table_name": None
             }
         
         wines_count = 0
-        user_schema = None
+        table_name = None
         
         if user.business_name:
-            # Conta vini nello schema utente
+            # Conta vini nella tabella INVENTARIO
             try:
-                user_schema = get_user_schema_name(telegram_id, user.business_name)
-                count_query = sql_text(f'SELECT COUNT(*) FROM "{user_schema}".wines WHERE user_id = :user_id')
+                table_inventario = get_user_table_name(telegram_id, user.business_name, "INVENTARIO")
+                table_name = table_inventario
+                count_query = sql_text(f'SELECT COUNT(*) FROM {table_inventario} WHERE user_id = :user_id')
                 result = await session.execute(count_query, {"user_id": user.id})
                 wines_count = result.scalar_one() or 0
-            except Exception as schema_error:
-                logger.warning(f"Schema {user_schema} not found or error counting wines: {schema_error}")
+            except Exception as table_error:
+                logger.warning(f"Table {table_name} not found or error counting wines: {table_error}")
                 wines_count = 0
         
         return {
@@ -590,74 +623,9 @@ async def get_inventory_status(session, telegram_id: int):
             "onboarding_completed": user.onboarding_completed,
             "business_name": user.business_name,
             "status": "completed" if user.onboarding_completed else "processing",
-            "schema_name": user_schema
+            "table_name": table_name
         }
     except Exception as e:
         logger.error(f"Error getting inventory status: {e}")
         raise
 
-async def delete_user_schema(session, telegram_id: int, business_name: str) -> dict:
-    """
-    Cancella schema utente e tutte le sue tabelle.
-    SOLO PER telegram_id = 927230913 (admin/owner)
-    Ritorna risultato operazione.
-    """
-    # Controllo sicurezza: solo l'owner può cancellare schemi
-    ADMIN_TELEGRAM_ID = 927230913
-    
-    if telegram_id != ADMIN_TELEGRAM_ID:
-        logger.warning(f"Unauthorized schema deletion attempt by telegram_id: {telegram_id}")
-        return {
-            "success": False,
-            "message": "Non autorizzato. Solo l'amministratore può cancellare schemi.",
-            "telegram_id": telegram_id
-        }
-    
-    try:
-        schema_name = get_user_schema_name(telegram_id, business_name)
-        
-        # Verifica che schema esista
-        check_schema = sql_text(f"""
-            SELECT schema_name 
-            FROM information_schema.schemata 
-            WHERE schema_name = :schema_name
-        """)
-        result = await session.execute(check_schema, {"schema_name": schema_name})
-        exists = result.scalar_one_or_none()
-        
-        if not exists:
-            return {
-                "success": False,
-                "message": f"Schema {schema_name} non trovato",
-                "schema_name": schema_name
-            }
-        
-        # Conta vini prima della cancellazione
-        count_query = sql_text(f'SELECT COUNT(*) FROM "{schema_name}".wines')
-        result = await session.execute(count_query)
-        wines_count = result.scalar_one() or 0
-        
-        # Cancella schema (cascade cancella tutte le tabelle)
-        drop_schema = sql_text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
-        await session.execute(drop_schema)
-        await session.commit()
-        
-        logger.info(f"ADMIN {telegram_id} deleted schema {schema_name} ({wines_count} wines deleted)")
-        
-        return {
-            "success": True,
-            "message": f"Schema {schema_name} cancellato con successo",
-            "schema_name": schema_name,
-            "wines_deleted": wines_count,
-            "telegram_id": telegram_id
-        }
-        
-    except Exception as e:
-        await session.rollback()
-        logger.error(f"Error deleting schema for user {telegram_id}: {e}")
-        return {
-            "success": False,
-            "message": f"Errore cancellazione schema: {str(e)}",
-            "schema_name": schema_name,
-            "telegram_id": telegram_id
-        }
