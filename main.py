@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text, select
 import uvicorn
@@ -7,7 +7,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime
-from database import get_db, create_tables, save_inventory_to_db, get_inventory_status, ProcessingJob
+from database import get_db, create_tables, save_inventory_to_db, get_inventory_status, ProcessingJob, delete_user_schema, get_user_schema_name
 from config import validate_config
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
@@ -369,6 +369,22 @@ async def get_job_status(job_id: str):
     except Exception as e:
         logger.error(f"Error getting job status: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.delete("/schema/{telegram_id}")
+async def delete_schema(telegram_id: int, business_name: str = Query(...)):
+    """
+    Cancella schema database per utente.
+    SOLO PER telegram_id = 927230913 (admin)
+    
+    Uso: DELETE /schema/{telegram_id}?business_name=NomeLocale
+    """
+    try:
+        async for db in get_db():
+            result = await delete_user_schema(db, telegram_id, business_name)
+            return result
+    except Exception as e:
+        logger.error(f"Error deleting schema for telegram_id {telegram_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting schema: {str(e)}")
 
 @app.get("/status/{telegram_id}")
 async def get_status(telegram_id: int):

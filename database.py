@@ -552,25 +552,58 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         raise
 
 async def get_user_inventories(session, telegram_id: int):
-    """Ottieni inventari di un utente"""
+    """Ottieni inventari di un utente dallo schema specifico"""
     try:
         from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
         
-        stmt = select(User).where(User.telegram_id == telegram_id).options(selectinload(User.wines))
+        # Trova utente
+        stmt = select(User).where(User.telegram_id == telegram_id)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
         
-        if not user:
+        if not user or not user.business_name:
             return []
         
-        return user.wines
+        # Ottieni nome schema utente
+        user_schema = get_user_schema_name(telegram_id, user.business_name)
+        
+        # Query vini dallo schema utente
+        select_wines = sql_text(f'SELECT * FROM "{user_schema}".wines WHERE user_id = :user_id ORDER BY created_at DESC')
+        result = await session.execute(select_wines, {"user_id": user.id})
+        
+        # Converti risultati in dizionari
+        wines = []
+        for row in result:
+            wines.append({
+                "id": row.id,
+                "user_id": row.user_id,
+                "name": row.name,
+                "producer": row.producer,
+                "vintage": row.vintage,
+                "grape_variety": row.grape_variety,
+                "region": row.region,
+                "country": row.country,
+                "wine_type": row.wine_type,
+                "classification": row.classification,
+                "quantity": row.quantity,
+                "min_quantity": row.min_quantity,
+                "cost_price": row.cost_price,
+                "selling_price": row.selling_price,
+                "alcohol_content": row.alcohol_content,
+                "description": row.description,
+                "notes": row.notes,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at
+            })
+        
+        return wines
     except Exception as e:
         logger.error(f"Error getting user inventories: {e}")
-        raise
+        # Se schema non esiste, ritorna lista vuota
+        return []
 
 async def get_inventory_status(session, telegram_id: int):
-    """Ottieni stato elaborazione per utente"""
+    """Ottieni stato elaborazione per utente dallo schema specifico"""
     try:
         from sqlalchemy import select
         
@@ -583,18 +616,98 @@ async def get_inventory_status(session, telegram_id: int):
                 "telegram_id": telegram_id,
                 "total_wines": 0,
                 "onboarding_completed": False,
-                "status": "not_found"
+                "status": "not_found",
+                "schema_name": None
             }
         
-        wines_count = len(user.wines) if user.wines else 0
+        wines_count = 0
+        user_schema = None
+        
+        if user.business_name:
+            # Conta vini nello schema utente
+            try:
+                user_schema = get_user_schema_name(telegram_id, user.business_name)
+                count_query = sql_text(f'SELECT COUNT(*) FROM "{user_schema}".wines WHERE user_id = :user_id')
+                result = await session.execute(count_query, {"user_id": user.id})
+                wines_count = result.scalar_one() or 0
+            except Exception as schema_error:
+                logger.warning(f"Schema {user_schema} not found or error counting wines: {schema_error}")
+                wines_count = 0
         
         return {
             "telegram_id": telegram_id,
             "total_wines": wines_count,
             "onboarding_completed": user.onboarding_completed,
             "business_name": user.business_name,
-            "status": "completed" if user.onboarding_completed else "processing"
+            "status": "completed" if user.onboarding_completed else "processing",
+            "schema_name": user_schema
         }
     except Exception as e:
         logger.error(f"Error getting inventory status: {e}")
         raise
+
+async def delete_user_schema(session, telegram_id: int, business_name: str) -> dict:
+    """
+    Cancella schema utente e tutte le sue tabelle.
+    SOLO PER telegram_id = 927230913 (admin/owner)
+    Ritorna risultato operazione.
+    """
+    # Controllo sicurezza: solo l'owner può cancellare schemi
+    ADMIN_TELEGRAM_ID = 927230913
+    
+    if telegram_id != ADMIN_TELEGRAM_ID:
+        logger.warning(f"Unauthorized schema deletion attempt by telegram_id: {telegram_id}")
+        return {
+            "success": False,
+            "message": "Non autorizzato. Solo l'amministratore può cancellare schemi.",
+            "telegram_id": telegram_id
+        }
+    
+    try:
+        schema_name = get_user_schema_name(telegram_id, business_name)
+        
+        # Verifica che schema esista
+        check_schema = sql_text(f"""
+            SELECT schema_name 
+            FROM information_schema.schemata 
+            WHERE schema_name = :schema_name
+        """)
+        result = await session.execute(check_schema, {"schema_name": schema_name})
+        exists = result.scalar_one_or_none()
+        
+        if not exists:
+            return {
+                "success": False,
+                "message": f"Schema {schema_name} non trovato",
+                "schema_name": schema_name
+            }
+        
+        # Conta vini prima della cancellazione
+        count_query = sql_text(f'SELECT COUNT(*) FROM "{schema_name}".wines')
+        result = await session.execute(count_query)
+        wines_count = result.scalar_one() or 0
+        
+        # Cancella schema (cascade cancella tutte le tabelle)
+        drop_schema = sql_text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
+        await session.execute(drop_schema)
+        await session.commit()
+        
+        logger.info(f"ADMIN {telegram_id} deleted schema {schema_name} ({wines_count} wines deleted)")
+        
+        return {
+            "success": True,
+            "message": f"Schema {schema_name} cancellato con successo",
+            "schema_name": schema_name,
+            "wines_deleted": wines_count,
+            "telegram_id": telegram_id
+        }
+        
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error deleting schema for user {telegram_id}: {e}")
+        return {
+            "success": False,
+            "message": f"Errore cancellazione schema: {str(e)}",
+            "schema_name": schema_name,
+            "telegram_id": telegram_id
+        }
