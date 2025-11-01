@@ -33,87 +33,15 @@ class User(Base):
     email = Column(String(200))
     onboarding_completed = Column(Boolean, default=False)
     
-    # Relazioni
-    wines = relationship("Wine", back_populates="user", cascade="all, delete-orphan")
-    inventory_backups = relationship("InventoryBackup", back_populates="user", cascade="all, delete-orphan")
-    inventory_logs = relationship("InventoryLog", back_populates="user", cascade="all, delete-orphan")
+    # Relazioni rimosse - i vini sono ora in schemi separati per utente
 
-class Wine(Base):
-    """Modello per l'inventario vini"""
-    __tablename__ = 'wines'
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    
-    # Dati vino
-    name = Column(String(200), nullable=False)
-    producer = Column(String(200))
-    vintage = Column(Integer)  # Annata
-    grape_variety = Column(String(200))  # Vitigno
-    region = Column(String(200))
-    country = Column(String(100))
-    
-    # Classificazione
-    wine_type = Column(String(50))  # rosso, bianco, rosato, spumante, etc.
-    classification = Column(String(100))  # DOCG, DOC, IGT, etc.
-    
-    # Quantità e prezzi
-    quantity = Column(Integer, default=0)
-    min_quantity = Column(Integer, default=0)  # Scorta minima
-    cost_price = Column(Float)  # Prezzo di acquisto
-    selling_price = Column(Float)  # Prezzo di vendita
-    
-    # Dettagli
-    alcohol_content = Column(Float)  # Gradazione alcolica
-    description = Column(Text)
-    notes = Column(Text)
-    
-    # Metadati
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relazioni
-    user = relationship("User", back_populates="wines")
-
-class InventoryBackup(Base):
-    """Backup dell'inventario iniziale per ogni utente"""
-    __tablename__ = 'inventory_backups'
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    
-    # Dati del backup
-    backup_name = Column(String(200), nullable=False)  # "Inventario Iniziale", "Backup Giorno X"
-    backup_data = Column(Text, nullable=False)  # JSON con tutti i dati inventario
-    backup_type = Column(String(20), default="initial")  # 'initial', 'daily', 'manual'
-    
-    # Metadati
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Relazioni
-    user = relationship("User", back_populates="inventory_backups")
-
-class InventoryLog(Base):
-    """Log di consumi e rifornimenti per ogni utente"""
-    __tablename__ = 'inventory_logs'
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    
-    # Dati del movimento
-    wine_name = Column(String(200), nullable=False)
-    wine_producer = Column(String(200))
-    movement_type = Column(String(20), nullable=False)  # 'consumo', 'rifornimento', 'aggiustamento'
-    quantity_change = Column(Integer, nullable=False)  # Positivo per rifornimenti, negativo per consumi
-    quantity_before = Column(Integer, nullable=False)  # Quantità prima del movimento
-    quantity_after = Column(Integer, nullable=False)   # Quantità dopo il movimento
-    
-    # Dettagli
-    notes = Column(Text)
-    movement_date = Column(DateTime, default=datetime.utcnow)
-    
-    # Relazioni
-    user = relationship("User", back_populates="inventory_logs")
+# NOTA: I modelli Wine, InventoryBackup, InventoryLog NON sono più modelli Base
+# Vengono creati dinamicamente negli schemi utente usando SQL diretto in ensure_user_schema()
+# Questo garantisce isolamento completo dei dati per ogni utente.
+#
+# Le tabelle wines, inventory_backups, inventory_logs vengono create nello schema:
+# user_{telegram_id}_{business_name_sanitized}
+# con foreign key verso public.users(id)
 
 class ProcessingJob(Base):
     """Job di elaborazione inventario asincrono"""
@@ -224,7 +152,7 @@ def get_user_schema_name(telegram_id: int, business_name: str) -> str:
 
 async def ensure_user_schema(session, telegram_id: int, business_name: str) -> str:
     """
-    Crea schema utente se non esiste e crea tutte le tabelle.
+    Crea schema utente se non esiste e crea tutte le tabelle usando SQL diretto.
     Ritorna nome schema creato.
     """
     schema_name = get_user_schema_name(telegram_id, business_name)
@@ -246,63 +174,76 @@ async def ensure_user_schema(session, telegram_id: int, business_name: str) -> s
             await session.commit()
             logger.info(f"Created schema: {schema_name}")
         
-        # Crea tabelle nello schema (usa metadata con schema specificato)
-        from sqlalchemy import Table, MetaData
+        # Verifica se tabella wines esiste nello schema
+        check_table = sql_text(f"""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = :schema_name AND table_name = 'wines'
+        """)
+        result = await session.execute(check_table, {"schema_name": schema_name})
+        table_exists = result.scalar_one_or_none()
         
-        # Crea nuovo metadata per questo schema
-        user_metadata = MetaData(schema=schema_name)
-        
-        # Definisci tabelle per questo schema
-        user_wines = Table(
-            'wines', user_metadata,
-            Column('id', Integer, primary_key=True),
-            Column('user_id', Integer, ForeignKey('public.users.id'), nullable=False),
-            Column('name', String(200), nullable=False),
-            Column('producer', String(200)),
-            Column('vintage', Integer),
-            Column('grape_variety', String(200)),
-            Column('region', String(200)),
-            Column('country', String(100)),
-            Column('wine_type', String(50)),
-            Column('classification', String(100)),
-            Column('quantity', Integer, default=0),
-            Column('min_quantity', Integer, default=0),
-            Column('cost_price', Float),
-            Column('selling_price', Float),
-            Column('alcohol_content', Float),
-            Column('description', Text),
-            Column('notes', Text),
-            Column('created_at', DateTime, default=datetime.utcnow),
-            Column('updated_at', DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-        )
-        
-        user_backups = Table(
-            'inventory_backups', user_metadata,
-            Column('id', Integer, primary_key=True),
-            Column('user_id', Integer, ForeignKey('public.users.id'), nullable=False),
-            Column('backup_name', String(200), nullable=False),
-            Column('backup_data', Text, nullable=False),
-            Column('backup_type', String(20), default="initial"),
-            Column('created_at', DateTime, default=datetime.utcnow)
-        )
-        
-        user_logs = Table(
-            'inventory_logs', user_metadata,
-            Column('id', Integer, primary_key=True),
-            Column('user_id', Integer, ForeignKey('public.users.id'), nullable=False),
-            Column('wine_name', String(200), nullable=False),
-            Column('wine_producer', String(200)),
-            Column('movement_type', String(20), nullable=False),
-            Column('quantity_change', Integer, nullable=False),
-            Column('quantity_before', Integer, nullable=False),
-            Column('quantity_after', Integer, nullable=False),
-            Column('notes', Text),
-            Column('movement_date', DateTime, default=datetime.utcnow)
-        )
-        
-        # Crea tutte le tabelle nello schema
-        async with engine.begin() as conn:
-            await conn.run_sync(user_metadata.create_all)
+        if not table_exists:
+            # Crea tabelle usando SQL diretto (evita problemi con ForeignKey di SQLAlchemy)
+            
+            # Tabella wines
+            create_wines = sql_text(f"""
+                CREATE TABLE IF NOT EXISTS "{schema_name}".wines (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                    name VARCHAR(200) NOT NULL,
+                    producer VARCHAR(200),
+                    vintage INTEGER,
+                    grape_variety VARCHAR(200),
+                    region VARCHAR(200),
+                    country VARCHAR(100),
+                    wine_type VARCHAR(50),
+                    classification VARCHAR(100),
+                    quantity INTEGER DEFAULT 0,
+                    min_quantity INTEGER DEFAULT 0,
+                    cost_price FLOAT,
+                    selling_price FLOAT,
+                    alcohol_content FLOAT,
+                    description TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await session.execute(create_wines)
+            
+            # Tabella inventory_backups
+            create_backups = sql_text(f"""
+                CREATE TABLE IF NOT EXISTS "{schema_name}".inventory_backups (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                    backup_name VARCHAR(200) NOT NULL,
+                    backup_data TEXT NOT NULL,
+                    backup_type VARCHAR(20) DEFAULT 'initial',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await session.execute(create_backups)
+            
+            # Tabella inventory_logs
+            create_logs = sql_text(f"""
+                CREATE TABLE IF NOT EXISTS "{schema_name}".inventory_logs (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                    wine_name VARCHAR(200) NOT NULL,
+                    wine_producer VARCHAR(200),
+                    movement_type VARCHAR(20) NOT NULL,
+                    quantity_change INTEGER NOT NULL,
+                    quantity_before INTEGER NOT NULL,
+                    quantity_after INTEGER NOT NULL,
+                    notes TEXT,
+                    movement_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await session.execute(create_logs)
+            
+            await session.commit()
+            logger.info(f"Created tables in schema {schema_name}: wines, inventory_backups, inventory_logs")
         
         logger.info(f"Ensured schema {schema_name} with all tables")
         return schema_name
@@ -312,11 +253,20 @@ async def ensure_user_schema(session, telegram_id: int, business_name: str) -> s
         raise
 
 async def create_tables():
-    """Crea tabelle nel database (schema public per tabelle condivise)"""
+    """
+    Crea solo tabelle condivise nello schema public: User e ProcessingJob.
+    Wine, InventoryBackup, InventoryLog vengono creati dinamicamente negli schemi utente.
+    """
     try:
+        # Crea solo User e ProcessingJob nello schema public
+        # I modelli Wine, InventoryBackup, InventoryLog sono stati rimossi dalla Base
+        # quindi non verranno creati qui
         async with engine.begin() as conn:
+            # Crea solo le tabelle dei modelli Base esistenti (User e ProcessingJob)
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables created successfully (public schema)")
+        
+        logger.info("Database tables created successfully (public schema): users, processing_jobs")
+        logger.info("Note: Wine, InventoryBackup, InventoryLog are created per-user in separate schemas via ensure_user_schema()")
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")
         raise
