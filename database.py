@@ -1,10 +1,12 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy import text as sql_text
 from datetime import datetime
 import os
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -170,24 +172,164 @@ async def get_db():
         finally:
             await session.close()
 
+def sanitize_schema_name(name: str) -> str:
+    """
+    Sanitizza nome per schema PostgreSQL.
+    Rimuove caratteri speciali, converte in lowercase, sostituisce spazi con underscore.
+    Limita a 63 caratteri (limite PostgreSQL per identificatori).
+    """
+    if not name:
+        return "unnamed"
+    
+    # Converti in lowercase
+    sanitized = name.lower()
+    
+    # Rimuovi caratteri speciali (mantieni solo lettere, numeri, underscore, spazi)
+    sanitized = re.sub(r'[^a-z0-9_\s]', '', sanitized)
+    
+    # Sostituisci spazi multipli con underscore singolo
+    sanitized = re.sub(r'\s+', '_', sanitized)
+    
+    # Rimuovi underscore multipli
+    sanitized = re.sub(r'_+', '_', sanitized)
+    
+    # Rimuovi underscore iniziali/finali
+    sanitized = sanitized.strip('_')
+    
+    # Limita a 63 caratteri (limite PostgreSQL)
+    if len(sanitized) > 63:
+        sanitized = sanitized[:63].rstrip('_')
+    
+    # Se vuoto dopo sanitizzazione, usa default
+    if not sanitized:
+        sanitized = "unnamed"
+    
+    return sanitized
+
+def get_user_schema_name(telegram_id: int, business_name: str) -> str:
+    """
+    Genera nome schema per utente: user_{telegram_id}_{business_name_sanitized}
+    """
+    business_sanitized = sanitize_schema_name(business_name)
+    schema_name = f"user_{telegram_id}_{business_sanitized}"
+    
+    # Limita lunghezza totale schema name (PostgreSQL limita a 63 caratteri)
+    if len(schema_name) > 63:
+        # Se troppo lungo, tronca business_name
+        max_business_len = 63 - len(f"user_{telegram_id}_")
+        business_sanitized = business_sanitized[:max_business_len].rstrip('_')
+        schema_name = f"user_{telegram_id}_{business_sanitized}"
+    
+    return schema_name
+
+async def ensure_user_schema(session, telegram_id: int, business_name: str) -> str:
+    """
+    Crea schema utente se non esiste e crea tutte le tabelle.
+    Ritorna nome schema creato.
+    """
+    schema_name = get_user_schema_name(telegram_id, business_name)
+    
+    try:
+        # Verifica se schema esiste
+        check_schema = sql_text(f"""
+            SELECT schema_name 
+            FROM information_schema.schemata 
+            WHERE schema_name = :schema_name
+        """)
+        result = await session.execute(check_schema, {"schema_name": schema_name})
+        exists = result.scalar_one_or_none()
+        
+        if not exists:
+            # Crea schema
+            create_schema = sql_text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
+            await session.execute(create_schema)
+            await session.commit()
+            logger.info(f"Created schema: {schema_name}")
+        
+        # Crea tabelle nello schema (usa metadata con schema specificato)
+        from sqlalchemy import Table, MetaData
+        
+        # Crea nuovo metadata per questo schema
+        user_metadata = MetaData(schema=schema_name)
+        
+        # Definisci tabelle per questo schema
+        user_wines = Table(
+            'wines', user_metadata,
+            Column('id', Integer, primary_key=True),
+            Column('user_id', Integer, ForeignKey('public.users.id'), nullable=False),
+            Column('name', String(200), nullable=False),
+            Column('producer', String(200)),
+            Column('vintage', Integer),
+            Column('grape_variety', String(200)),
+            Column('region', String(200)),
+            Column('country', String(100)),
+            Column('wine_type', String(50)),
+            Column('classification', String(100)),
+            Column('quantity', Integer, default=0),
+            Column('min_quantity', Integer, default=0),
+            Column('cost_price', Float),
+            Column('selling_price', Float),
+            Column('alcohol_content', Float),
+            Column('description', Text),
+            Column('notes', Text),
+            Column('created_at', DateTime, default=datetime.utcnow),
+            Column('updated_at', DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+        )
+        
+        user_backups = Table(
+            'inventory_backups', user_metadata,
+            Column('id', Integer, primary_key=True),
+            Column('user_id', Integer, ForeignKey('public.users.id'), nullable=False),
+            Column('backup_name', String(200), nullable=False),
+            Column('backup_data', Text, nullable=False),
+            Column('backup_type', String(20), default="initial"),
+            Column('created_at', DateTime, default=datetime.utcnow)
+        )
+        
+        user_logs = Table(
+            'inventory_logs', user_metadata,
+            Column('id', Integer, primary_key=True),
+            Column('user_id', Integer, ForeignKey('public.users.id'), nullable=False),
+            Column('wine_name', String(200), nullable=False),
+            Column('wine_producer', String(200)),
+            Column('movement_type', String(20), nullable=False),
+            Column('quantity_change', Integer, nullable=False),
+            Column('quantity_before', Integer, nullable=False),
+            Column('quantity_after', Integer, nullable=False),
+            Column('notes', Text),
+            Column('movement_date', DateTime, default=datetime.utcnow)
+        )
+        
+        # Crea tutte le tabelle nello schema
+        async with engine.begin() as conn:
+            await conn.run_sync(user_metadata.create_all)
+        
+        logger.info(f"Ensured schema {schema_name} with all tables")
+        return schema_name
+        
+    except Exception as e:
+        logger.error(f"Error ensuring user schema {schema_name}: {e}")
+        raise
+
 async def create_tables():
-    """Crea tabelle nel database"""
+    """Crea tabelle nel database (schema public per tabelle condivise)"""
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables created successfully")
+        logger.info("Database tables created successfully (public schema)")
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")
         raise
 
 async def save_inventory_to_db(session, telegram_id: int, business_name: str, wines_data: list):
     """
-    Salva inventario e vini nel database
+    Salva inventario e vini nel database nello schema utente specifico.
     """
     try:
-        from sqlalchemy import select
+        from sqlalchemy import select, Table, MetaData, insert
+        from sqlalchemy import text as sql_text
         
-        # Trova o crea utente
+        # Trova o crea utente (in schema public)
         stmt = select(User).where(User.telegram_id == telegram_id)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
@@ -206,6 +348,18 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         if not user.business_name:
             user.business_name = business_name
             user.onboarding_completed = True
+        
+        # Assicura che schema utente esista
+        user_schema = await ensure_user_schema(session, telegram_id, business_name)
+        
+        # Imposta search_path per questa sessione (opzionale, usiamo qualificazione esplicita)
+        # await session.execute(sql_text(f'SET search_path TO "{user_schema}", public'))
+        
+        # Ottieni metadata per schema utente
+        user_metadata = MetaData(schema=user_schema)
+        
+        # Rifletti tabelle dallo schema utente (o definiscile se necessario)
+        user_wines_table = Table('wines', user_metadata, autoload_with=engine.sync_engine, schema=user_schema)
         
         # Normalizza e aggiungi vini
         saved_count = 0
@@ -355,17 +509,18 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         await session.commit()
         
         if error_count > 0:
-            logger.warning(f"Saved {saved_count} wines for user {telegram_id}, {error_count} con warning/errori")
+            logger.warning(f"Saved {saved_count} wines for user {telegram_id} in schema {user_schema}, {error_count} con warning/errori")
             logger.warning(f"Errors summary: {errors_log}")
         else:
-            logger.info(f"Saved {saved_count} wines for user {telegram_id} without errors")
+            logger.info(f"Saved {saved_count} wines for user {telegram_id} in schema {user_schema} without errors")
         
         return {
             "user_id": user.id,
             "saved_count": saved_count,
             "total_count": len(wines_data),
             "error_count": error_count,
-            "errors": errors_log
+            "errors": errors_log,
+            "schema_name": user_schema
         }
         
     except Exception as e:
