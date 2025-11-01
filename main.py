@@ -1,12 +1,13 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import text, select
 import uvicorn
 import os
 import asyncio
 import json
+import uuid
 from datetime import datetime
-from database import get_db, create_tables, save_inventory_to_db, get_inventory_status
+from database import get_db, create_tables, save_inventory_to_db, get_inventory_status, ProcessingJob
 from config import validate_config
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
@@ -101,6 +102,140 @@ async def health_check():
             "timestamp": str(datetime.utcnow())
         }
 
+async def process_inventory_background(
+    job_id: str,
+    telegram_id: int,
+    business_name: str,
+    file_type: str,
+    file_content: bytes,
+    file_name: str
+):
+    """
+    Elabora inventario in background (chiamata asincrona)
+    """
+    start_time = datetime.utcnow()
+    
+    try:
+        async for db in get_db():
+            # Aggiorna job status a processing
+            stmt = select(ProcessingJob).where(ProcessingJob.job_id == job_id)
+            result = await db.execute(stmt)
+            job = result.scalar_one()
+            
+            job.status = 'processing'
+            job.started_at = datetime.utcnow()
+            await db.commit()
+            
+            logger.info(f"Job {job_id}: Started processing for telegram_id: {telegram_id}")
+            
+            # Processa file in base al tipo
+            wines_data = []
+            processing_method = ""
+            
+            try:
+                if file_type.lower() == "csv":
+                    wines_data = await process_csv_file(file_content)
+                    processing_method = "csv_ai_enhanced"
+                elif file_type.lower() in ["excel", "xlsx", "xls"]:
+                    wines_data = await process_excel_file(file_content)
+                    processing_method = "excel_ai_enhanced"
+                elif file_type.lower() in ["image", "jpg", "jpeg", "png"]:
+                    wines_data = await process_image_ocr(file_content)
+                    processing_method = "ocr_ai_enhanced"
+                
+                logger.info(f"Job {job_id}: Extracted {len(wines_data)} wines from {file_type} file")
+                
+                # Aggiorna progress
+                job.total_wines = len(wines_data)
+                job.processed_wines = len(wines_data)
+                job.processing_method = processing_method
+                await db.commit()
+                
+            except Exception as processing_error:
+                logger.error(f"Job {job_id}: Error processing {file_type} file: {processing_error}")
+                job.status = 'error'
+                job.error_message = f"Error processing file: {str(processing_error)}"
+                job.completed_at = datetime.utcnow()
+                await db.commit()
+                return
+            
+            # Salva nel database
+            save_result = None
+            try:
+                save_result = await save_inventory_to_db(db, telegram_id, business_name, wines_data)
+            except Exception as db_error:
+                logger.error(f"Job {job_id}: Database error: {db_error}")
+                job.status = 'error'
+                job.error_message = f"Database error: {str(db_error)}"
+                job.completed_at = datetime.utcnow()
+                await db.commit()
+                return
+            
+            processing_time = (datetime.utcnow() - start_time).total_seconds()
+            
+            # Estrai informazioni dal risultato
+            if isinstance(save_result, dict):
+                inventory_id = save_result.get("user_id")
+                saved_count = save_result.get("saved_count", len(wines_data))
+                error_count = save_result.get("error_count", 0)
+                errors_log = save_result.get("errors", [])
+            else:
+                inventory_id = save_result
+                saved_count = len(wines_data)
+                error_count = 0
+                errors_log = []
+            
+            logger.info(f"Job {job_id}: Successfully processed {saved_count}/{len(wines_data)} wines in {processing_time:.2f}s")
+            
+            # Prepara risultato
+            ai_enabled = "yes" if os.getenv("OPENAI_API_KEY") else "no"
+            
+            result_data = {
+                "status": "success",
+                "total_wines": len(wines_data),
+                "saved_wines": saved_count,
+                "business_name": business_name,
+                "telegram_id": telegram_id,
+                "inventory_id": inventory_id,
+                "ai_enhanced": ai_enabled,
+                "processing_method": processing_method,
+                "processing_time_seconds": round(processing_time, 2),
+                "file_type": file_type,
+                "file_size_bytes": len(file_content)
+            }
+            
+            if error_count > 0:
+                result_data["warnings_count"] = error_count
+                result_data["warnings"] = errors_log[:10]
+                result_data["message"] = f"Salvati {saved_count} vini su {len(wines_data)}. {error_count} vini salvati con warning/errori (verificare note)."
+            
+            # Aggiorna job come completato
+            job.status = 'completed'
+            job.saved_wines = saved_count
+            job.error_count = error_count
+            job.result_data = json.dumps(result_data)
+            job.completed_at = datetime.utcnow()
+            await db.commit()
+            
+            logger.info(f"Job {job_id}: Completed successfully")
+            
+            break
+            
+    except Exception as e:
+        logger.error(f"Job {job_id}: Unexpected error: {e}")
+        try:
+            async for db in get_db():
+                stmt = select(ProcessingJob).where(ProcessingJob.job_id == job_id)
+                result = await db.execute(stmt)
+                job = result.scalar_one()
+                job.status = 'error'
+                job.error_message = f"Unexpected error: {str(e)}"
+                job.completed_at = datetime.utcnow()
+                await db.commit()
+                break
+        except:
+            pass
+
 @app.post("/process-inventory")
 async def process_inventory(
     telegram_id: int = Form(...),
@@ -109,12 +244,11 @@ async def process_inventory(
     file: UploadFile = File(...)
 ):
     """
-    Elabora file inventario e salva nel database
+    Crea job di elaborazione inventario e ritorna job_id immediatamente.
+    L'elaborazione avviene in background.
     """
-    start_time = datetime.utcnow()
-    
     try:
-        logger.info(f"Processing inventory for telegram_id: {telegram_id}, business: {business_name}, type: {file_type}")
+        logger.info(f"Creating job for telegram_id: {telegram_id}, business: {business_name}, type: {file_type}")
         
         # Validazione input
         if not telegram_id or telegram_id <= 0:
@@ -135,88 +269,105 @@ async def process_inventory(
         if len(file_content) > 10 * 1024 * 1024:  # 10MB limit
             raise HTTPException(status_code=413, detail="File too large (max 10MB)")
         
-        logger.info(f"File size: {len(file_content)} bytes")
+        # Genera job_id univoco
+        job_id = str(uuid.uuid4())
         
-        # Processa file in base al tipo
-        wines_data = []
-        processing_method = ""
+        # Crea job nel database
+        async for db in get_db():
+            job = ProcessingJob(
+                job_id=job_id,
+                telegram_id=telegram_id,
+                business_name=business_name,
+                status='pending',
+                file_type=file_type.lower(),
+                file_name=file.filename or "inventario",
+                file_size_bytes=len(file_content)
+            )
+            db.add(job)
+            await db.commit()
+            break
         
-        try:
-            if file_type.lower() == "csv":
-                wines_data = await process_csv_file(file_content)
-                processing_method = "csv_ai_enhanced"
-            elif file_type.lower() in ["excel", "xlsx", "xls"]:
-                wines_data = await process_excel_file(file_content)
-                processing_method = "excel_ai_enhanced"
-            elif file_type.lower() in ["image", "jpg", "jpeg", "png"]:
-                wines_data = await process_image_ocr(file_content)
-                processing_method = "ocr_ai_enhanced"
-            
-            logger.info(f"Extracted {len(wines_data)} wines from {file_type} file")
-            
-        except Exception as processing_error:
-            logger.error(f"Error processing {file_type} file: {processing_error}")
-            raise HTTPException(status_code=422, detail=f"Error processing {file_type} file: {str(processing_error)}")
+        logger.info(f"Job {job_id} created, starting background processing")
         
-        # Salva nel database
-        save_result = None
-        try:
-            async for db in get_db():
-                save_result = await save_inventory_to_db(db, telegram_id, business_name, wines_data)
-                break
-        except Exception as db_error:
-            logger.error(f"Database error: {db_error}")
-            raise HTTPException(status_code=500, detail=f"Database error: {str(db_error)}")
+        # Avvia elaborazione in background
+        asyncio.create_task(
+            process_inventory_background(
+                job_id=job_id,
+                telegram_id=telegram_id,
+                business_name=business_name,
+                file_type=file_type,
+                file_content=file_content,
+                file_name=file.filename or "inventario"
+            )
+        )
         
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
-        
-        # Estrai informazioni dal risultato
-        if isinstance(save_result, dict):
-            inventory_id = save_result.get("user_id")
-            saved_count = save_result.get("saved_count", len(wines_data))
-            error_count = save_result.get("error_count", 0)
-            errors_log = save_result.get("errors", [])
-        else:
-            # Fallback per compatibilità vecchio formato
-            inventory_id = save_result
-            saved_count = len(wines_data)
-            error_count = 0
-            errors_log = []
-        
-        logger.info(f"Successfully processed {saved_count}/{len(wines_data)} wines for inventory {inventory_id} in {processing_time:.2f}s")
-        if error_count > 0:
-            logger.warning(f"{error_count} wines saved with warnings/errors")
-        
-        # Informazioni AI per debugging
-        ai_enabled = "yes" if os.getenv("OPENAI_API_KEY") else "no"
-        
-        response = {
-            "status": "success",
-            "total_wines": len(wines_data),
-            "saved_wines": saved_count,
-            "business_name": business_name,
-            "telegram_id": telegram_id,
-            "inventory_id": inventory_id,
-            "ai_enhanced": ai_enabled,
-            "processing_method": processing_method,
-            "processing_time_seconds": round(processing_time, 2),
-            "file_type": file_type,
-            "file_size_bytes": len(file_content)
+        # Ritorna job_id immediatamente
+        return {
+            "status": "processing",
+            "job_id": job_id,
+            "message": "Elaborazione avviata. Usa /status/{job_id} per verificare lo stato.",
+            "telegram_id": telegram_id
         }
         
-        # Aggiungi informazioni su errori se presenti
-        if error_count > 0:
-            response["warnings_count"] = error_count
-            response["warnings"] = errors_log[:10]  # Limita a 10 per non appesantire la risposta
-            response["message"] = f"Salvati {saved_count} vini su {len(wines_data)}. {error_count} vini salvati con warning/errori (verificare note)."
-        
-        return response
-        
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"Unexpected error processing inventory: {e}")
+        logger.error(f"Error creating job: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/status/{job_id}")
+async def get_job_status(job_id: str):
+    """
+    Ottieni stato elaborazione per job_id
+    """
+    try:
+        async for db in get_db():
+            stmt = select(ProcessingJob).where(ProcessingJob.job_id == job_id)
+            result = await db.execute(stmt)
+            job = result.scalar_one_or_none()
+            
+            if not job:
+                raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+            
+            response = {
+                "job_id": job.job_id,
+                "status": job.status,
+                "telegram_id": job.telegram_id,
+                "business_name": job.business_name,
+                "file_type": job.file_type,
+                "file_name": job.file_name,
+                "total_wines": job.total_wines,
+                "processed_wines": job.processed_wines,
+                "saved_wines": job.saved_wines,
+                "error_count": job.error_count,
+                "created_at": job.created_at.isoformat() if job.created_at else None,
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None
+            }
+            
+            # Se completato, aggiungi risultato
+            if job.status == 'completed' and job.result_data:
+                try:
+                    response["result"] = json.loads(job.result_data)
+                except:
+                    pass
+            
+            # Se errore, aggiungi messaggio errore
+            if job.status == 'error' and job.error_message:
+                response["error"] = job.error_message
+            
+            # Calcola progress percentuale
+            if job.total_wines > 0:
+                response["progress_percent"] = int((job.processed_wines / job.total_wines) * 100)
+            else:
+                response["progress_percent"] = 0
+            
+            return response
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting job status: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/status/{telegram_id}")

@@ -113,6 +113,39 @@ class InventoryLog(Base):
     # Relazioni
     user = relationship("User", back_populates="inventory_logs")
 
+class ProcessingJob(Base):
+    """Job di elaborazione inventario asincrono"""
+    __tablename__ = 'processing_jobs'
+    
+    id = Column(Integer, primary_key=True)
+    job_id = Column(String(50), unique=True, nullable=False, index=True)  # UUID o ID univoco
+    
+    # Dati utente
+    telegram_id = Column(Integer, nullable=False, index=True)
+    business_name = Column(String(200))
+    
+    # Stato elaborazione
+    status = Column(String(20), nullable=False, default='pending')  # pending, processing, completed, error
+    file_type = Column(String(20))  # csv, excel, image
+    file_name = Column(String(200))
+    file_size_bytes = Column(Integer)
+    
+    # Progress
+    total_wines = Column(Integer, default=0)
+    processed_wines = Column(Integer, default=0)
+    saved_wines = Column(Integer, default=0)
+    error_count = Column(Integer, default=0)
+    
+    # Risultati (JSON)
+    result_data = Column(Text)  # JSON con risultato completo
+    error_message = Column(Text)
+    
+    # Metadati
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    processing_method = Column(String(50))  # csv_ai_enhanced, excel_ai_enhanced, ocr_ai_enhanced
+
 # Configurazione database
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/gioia_processor")
 
