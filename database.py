@@ -337,8 +337,8 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         if not user:
             # Crea nuovo utente
             user = User(
-                telegram_id=telegram_id,
-                business_name=business_name,
+            telegram_id=telegram_id,
+            business_name=business_name,
                 onboarding_completed=True
             )
             session.add(user)
@@ -355,13 +355,7 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         # Imposta search_path per questa sessione (opzionale, usiamo qualificazione esplicita)
         # await session.execute(sql_text(f'SET search_path TO "{user_schema}", public'))
         
-        # Ottieni metadata per schema utente
-        user_metadata = MetaData(schema=user_schema)
-        
-        # Rifletti tabelle dallo schema utente (o definiscile se necessario)
-        user_wines_table = Table('wines', user_metadata, autoload_with=engine.sync_engine, schema=user_schema)
-        
-        # Normalizza e aggiungi vini
+        # Normalizza e aggiungi vini nello schema utente
         saved_count = 0
         error_count = 0
         errors_log = []
@@ -448,20 +442,40 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                 
                 combined_notes = "\n".join(notes_parts) if notes_parts else None
                 
-                # Salva comunque il vino, anche con dati parziali
-                wine = Wine(
-                    user_id=user.id,
-                    name=wine_data.get("name", "Vino senza nome"),
-                    vintage=vintage,  # Ora è int o None
-                    producer=wine_data.get("producer"),
-                    region=wine_data.get("region"),
-                    selling_price=price,  # Ora è float o None
-                    quantity=quantity,  # Ora è int
-                    wine_type=wine_data.get("wine_type"),
-                    notes=combined_notes,
-                    description=wine_data.get("description")
-                )
-                session.add(wine)
+                # Salva vino nello schema utente usando SQL diretto
+                insert_wine = sql_text(f"""
+                    INSERT INTO "{user_schema}".wines 
+                    (user_id, name, producer, vintage, grape_variety, region, country, 
+                     wine_type, classification, quantity, min_quantity, cost_price, selling_price, 
+                     alcohol_content, description, notes, created_at, updated_at)
+                    VALUES 
+                    (:user_id, :name, :producer, :vintage, :grape_variety, :region, :country,
+                     :wine_type, :classification, :quantity, :min_quantity, :cost_price, :selling_price,
+                     :alcohol_content, :description, :notes, :created_at, :updated_at)
+                    RETURNING id
+                """)
+                
+                result = await session.execute(insert_wine, {
+                    "user_id": user.id,
+                    "name": wine_data.get("name", "Vino senza nome"),
+                    "producer": wine_data.get("producer"),
+                    "vintage": vintage,
+                    "grape_variety": wine_data.get("grape_variety"),
+                    "region": wine_data.get("region"),
+                    "country": wine_data.get("country"),
+                    "wine_type": wine_data.get("wine_type"),
+                    "classification": wine_data.get("classification"),
+                    "quantity": quantity,
+                    "min_quantity": wine_data.get("min_quantity", 0),
+                    "cost_price": wine_data.get("cost_price"),
+                    "selling_price": price,
+                    "alcohol_content": wine_data.get("alcohol_content"),
+                    "description": wine_data.get("description"),
+                    "notes": combined_notes,
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                })
+                wine_id = result.scalar_one()
                 
                 if warnings or errors:
                     error_count += 1
@@ -482,25 +496,34 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                     "errors": [f"Errore critico: {str(e)}"]
                 })
                 
-                # Prova a salvare comunque con dati disponibili
+                # Prova a salvare comunque con dati disponibili nello schema utente
                 try:
                     error_note = f"❌ ERRORE ELABORAZIONE: {str(e)}\n⚠️ Vino salvato con dati parziali. Verificare manualmente."
                     if wine_data.get("notes"):
                         error_note = f"{wine_data.get('notes')}\n\n{error_note}"
                     
-                    wine = Wine(
-                        user_id=user.id,
-                        name=wine_data.get("name", "Vino senza nome - ERRORE"),
-                        vintage=None,  # Non possiamo convertirlo
-                        producer=wine_data.get("producer"),
-                        region=wine_data.get("region"),
-                        selling_price=None,
-                        quantity=1,  # Default
-                        wine_type=wine_data.get("wine_type"),
-                        notes=error_note,
-                        description=wine_data.get("description")
-                    )
-                    session.add(wine)
+                    insert_wine_error = sql_text(f"""
+                        INSERT INTO "{user_schema}".wines 
+                        (user_id, name, producer, vintage, region, wine_type, quantity, notes, description, created_at, updated_at)
+                        VALUES 
+                        (:user_id, :name, :producer, :vintage, :region, :wine_type, :quantity, :notes, :description, :created_at, :updated_at)
+                        RETURNING id
+                    """)
+                    
+                    result = await session.execute(insert_wine_error, {
+                        "user_id": user.id,
+                        "name": wine_data.get("name", "Vino senza nome - ERRORE"),
+                        "producer": wine_data.get("producer"),
+                        "vintage": None,
+                        "region": wine_data.get("region"),
+                        "wine_type": wine_data.get("wine_type"),
+                        "quantity": 1,
+                        "notes": error_note,
+                        "description": wine_data.get("description"),
+                        "created_at": datetime.utcnow(),
+                        "updated_at": datetime.utcnow()
+                    })
+                    wine_id = result.scalar_one()
                     saved_count += 1
                 except Exception as save_error:
                     logger.error(f"Impossibile salvare vino {wine_data.get('name', 'Unknown')} anche con dati parziali: {save_error}")
