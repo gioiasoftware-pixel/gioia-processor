@@ -221,26 +221,44 @@ Rispondi SOLO con JSON migliorato:
     
     async def validate_wine_data(self, wines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Valida e filtra dati vini usando AI
+        Valida e filtra dati vini usando AI.
+        Processa in batch per gestire grandi inventari.
         """
         try:
             if not wines:
                 return []
             
-            prompt = f"""
-Valida questi dati di vini e rimuovi duplicati o dati non validi:
+            # Processa in batch di 20 vini alla volta per evitare limiti token
+            batch_size = 20
+            all_validated_wines = []
+            
+            for i in range(0, len(wines), batch_size):
+                batch = wines[i:i + batch_size]
+                batch_num = (i // batch_size) + 1
+                total_batches = (len(wines) + batch_size - 1) // batch_size
+                
+                logger.info(f"Validating wine batch {batch_num}/{total_batches} ({len(batch)} wines)")
+                
+                prompt = f"""
+Valida questi dati di vini e rimuovi SOLO duplicati esatti (stesso nome E stessa annata):
 
-Vini:
-{json.dumps(wines[:10], ensure_ascii=False, indent=2)}  # Limita a 10 vini per evitare limiti
+Vini da validare:
+{json.dumps(batch, ensure_ascii=False, indent=2)}
 
-Criteri di validazione:
-1. Nome vino deve essere presente e valido
-2. Annata deve essere un anno valido (1900-2024)
-3. Prezzo deve essere un numero positivo
-4. Quantità deve essere un numero positivo
-5. Rimuovi duplicati basati su nome e annata
+Criteri di validazione (MOLTO PERMISSIVI):
+1. Nome vino deve essere presente (non vuoto) - ACCETTA qualsiasi nome valido
+2. Annata: accetta qualsiasi anno (anche null/mancante) - NON FILTRARE se manca
+3. Prezzo: accetta qualsiasi valore (anche null/mancante) - NON FILTRARE se manca
+4. Quantità: accetta qualsiasi valore (anche null/mancante) - NON FILTRARE se manca
+5. Rimuovi SOLO duplicati esatti: stesso nome E stessa annata (se presente)
 
-Rispondi SOLO con JSON array dei vini validi:
+IMPORTANTE:
+- NON rimuovere vini se mancano dati (prezzo, quantità, annata)
+- NON rimuovere vini se i dati sembrano "strani" o non standard
+- MANTIENI TUTTI I VINI tranne duplicati esatti
+- Se un vino ha nome, deve essere incluso
+
+Rispondi SOLO con JSON array di TUTTI i vini validi (mantieni tutti tranne duplicati):
 [
     {{
         "name": "Nome Vino",
@@ -253,23 +271,75 @@ Rispondi SOLO con JSON array dei vini validi:
     }}
 ]
 """
+                
+                # Controlla dimensione prompt
+                if self.count_tokens(prompt) > 8000:
+                    # Se troppo grande, riduci batch
+                    logger.warning(f"Prompt troppo grande ({self.count_tokens(prompt)} tokens), riduco batch a {len(batch) // 2}")
+                    # Processa metà batch alla volta
+                    mid = len(batch) // 2
+                    sub_batch1 = batch[:mid]
+                    sub_batch2 = batch[mid:]
+                    
+                    for sub_batch in [sub_batch1, sub_batch2]:
+                        if not sub_batch:
+                            continue
+                        sub_prompt = prompt.replace(json.dumps(batch, ensure_ascii=False, indent=2), 
+                                                   json.dumps(sub_batch, ensure_ascii=False, indent=2))
+                        try:
+                            response = self.client.chat.completions.create(
+                                model="gpt-4",
+                                messages=[
+                                    {"role": "system", "content": "Sei un esperto di vini. Valida e filtra dati vini rimuovendo SOLO duplicati esatti. MANTIENI tutti i vini validi anche con dati parziali."},
+                                    {"role": "user", "content": sub_prompt}
+                                ],
+                                temperature=0.1,
+                                max_tokens=4000
+                            )
+                            
+                            validated_batch = json.loads(response.choices[0].message.content)
+                            all_validated_wines.extend(validated_batch)
+                        except Exception as e:
+                            logger.warning(f"Error validating sub-batch: {e}, keeping original wines")
+                            all_validated_wines.extend(sub_batch)
+                    continue
+                
+                try:
+                    response = self.client.chat.completions.create(
+                        model="gpt-4",
+                        messages=[
+                            {"role": "system", "content": "Sei un esperto di vini. Valida e filtra dati vini rimuovendo SOLO duplicati esatti. MANTIENI tutti i vini validi anche con dati parziali."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.1,
+                        max_tokens=4000
+                    )
+                    
+                    validated_batch = json.loads(response.choices[0].message.content)
+                    all_validated_wines.extend(validated_batch)
+                    logger.info(f"Batch {batch_num}/{total_batches}: validated {len(validated_batch)}/{len(batch)} wines")
+                    
+                except Exception as e:
+                    logger.warning(f"Error validating batch {batch_num}: {e}, keeping original wines")
+                    # Se errore, mantieni vini originali del batch
+                    all_validated_wines.extend(batch)
             
-            response = self.client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "Sei un esperto di vini. Valida e filtra dati vini rimuovendo duplicati e dati non validi."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=2000
-            )
+            # Rimuovi duplicati finali manualmente (stesso nome + stessa annata)
+            seen = set()
+            final_wines = []
+            for wine in all_validated_wines:
+                key = (wine.get('name', '').lower().strip(), str(wine.get('vintage', '')))
+                if key not in seen:
+                    seen.add(key)
+                    final_wines.append(wine)
             
-            validated_wines = json.loads(response.choices[0].message.content)
-            logger.info(f"AI validated {len(validated_wines)} wines from {len(wines)} original")
-            return validated_wines
+            logger.info(f"AI validated {len(final_wines)} wines from {len(wines)} original (removed {len(wines) - len(final_wines)} duplicates)")
+            return final_wines
             
         except Exception as e:
             logger.error(f"Error in AI wine validation: {e}")
+            # In caso di errore, ritorna tutti i vini originali
+            logger.warning("Returning all original wines due to validation error")
             return wines
 
 # Istanza globale del processore AI
