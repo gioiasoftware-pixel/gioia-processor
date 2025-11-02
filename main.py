@@ -347,15 +347,15 @@ async def get_job_status(job_id: str):
             
             response = {
                 "job_id": job.job_id,
-                "status": job.status,
-                "telegram_id": job.telegram_id,
-                "business_name": job.business_name,
-                "file_type": job.file_type,
-                "file_name": job.file_name,
-                "total_wines": job.total_wines,
-                "processed_wines": job.processed_wines,
-                "saved_wines": job.saved_wines,
-                "error_count": job.error_count,
+                "status": job.status or "unknown",
+                "telegram_id": job.telegram_id or 0,
+                "business_name": job.business_name or "",
+                "file_type": job.file_type or "",
+                "file_name": job.file_name or "",
+                "total_wines": job.total_wines or 0,
+                "processed_wines": job.processed_wines or 0,
+                "saved_wines": job.saved_wines or 0,
+                "error_count": job.error_count or 0,
                 "created_at": job.created_at.isoformat() if job.created_at else None,
                 "started_at": job.started_at.isoformat() if job.started_at else None,
                 "completed_at": job.completed_at.isoformat() if job.completed_at else None
@@ -364,20 +364,27 @@ async def get_job_status(job_id: str):
             # Se completato, aggiungi risultato
             if job.status == 'completed' and job.result_data:
                 try:
-                    response["result"] = json.loads(job.result_data)
-                except:
-                    pass
+                    result_dict = json.loads(job.result_data)
+                    if isinstance(result_dict, dict):
+                        response["result"] = result_dict
+                    else:
+                        logger.warning(f"Invalid result_data format for job {job_id}: not a dict")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error parsing result_data JSON for job {job_id}: {e}")
+                except Exception as e:
+                    logger.error(f"Unexpected error parsing result_data for job {job_id}: {e}")
             
             # Se errore, aggiungi messaggio errore
             if job.status == 'error' and job.error_message:
                 response["error"] = job.error_message
             
             # Calcola progress percentuale
-            if job.total_wines > 0:
-                response["progress_percent"] = int((job.processed_wines / job.total_wines) * 100)
+            if job.total_wines and job.total_wines > 0:
+                response["progress_percent"] = int((job.processed_wines or 0) / job.total_wines * 100)
             else:
                 response["progress_percent"] = 0
             
+            logger.debug(f"Job status response for {job_id}: status={response['status']}, progress={response['progress_percent']}%")
             return response
             
     except HTTPException:
