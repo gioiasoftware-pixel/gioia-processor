@@ -18,3 +18,4 @@ CREATE INDEX IF NOT EXISTS idx_rate_limit_cleanup
 -- Commento sulla tabella
 COMMENT ON TABLE rate_limit_logs IS 'Rate limit logs per utente/azione (sliding window)';
 
+

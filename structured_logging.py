@@ -32,3 +32,4 @@ def log_with_context(
         json.dumps(payload)
     )
 
+

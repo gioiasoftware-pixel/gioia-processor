@@ -9,3 +9,4 @@ CREATE INDEX IF NOT EXISTS idx_users_telegram
 CREATE INDEX IF NOT EXISTS idx_jobs_user_status_created
   ON processing_jobs (telegram_id, status, created_at DESC);
 
+
