@@ -517,9 +517,10 @@ async def process_movement_background(
                 await db.commit()
                 return
             
-            # Ottieni nome tabelle
-            table_inventario = get_user_table_name(telegram_id, business_name, "INVENTARIO")
-            table_consumi = get_user_table_name(telegram_id, business_name, "Consumi e rifornimenti")
+            # Ottieni nome tabelle e assicura che esistano (inclusa migrazione se necessario)
+            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            table_inventario = user_tables["inventario"]
+            table_consumi = user_tables["consumi"]
             
             # Cerca vino nell'inventario (matching intelligente)
             search_wine = sql_text(f"""
