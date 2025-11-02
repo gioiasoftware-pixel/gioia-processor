@@ -102,6 +102,60 @@ async def get_db():
         finally:
             await session.close()
 
+async def migrate_consumi_table_if_needed(session, table_name: str):
+    """
+    Migra tabella 'Consumi e rifornimenti' dalla vecchia alla nuova struttura se necessario.
+    
+    Vecchia struttura: wine_name, wine_producer, movement_type, quantity_change, 
+                       quantity_before, quantity_after, notes, movement_date
+    Nuova struttura: data, Prodotto, prodotto_rifornito, prodotto_consumato
+    """
+    try:
+        from sqlalchemy import text as sql_text
+        
+        # Verifica se ha colonna vecchia (movement_type) o nuova (prodotto_rifornito)
+        check_columns = sql_text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public' 
+            AND table_name = :table_name
+            AND column_name IN ('movement_type', 'prodotto_rifornito')
+        """)
+        result = await session.execute(check_columns, {"table_name": table_name.replace('"', '')})
+        columns_found = [row[0] for row in result.fetchall()]
+        
+        # Se ha movement_type ma non prodotto_rifornito, è vecchia struttura - migra
+        if 'movement_type' in columns_found and 'prodotto_rifornito' not in columns_found:
+            logger.info(f"Migrating table {table_name} from old to new structure")
+            
+            # Backup dati vecchi se esistono (opzionale - solo per sicurezza)
+            # Qui possiamo decidere se perdere i dati vecchi o convertirli
+            # Per ora: cancella e ricrea (i dati vecchi non sono compatibili con nuova struttura)
+            
+            # Cancella tabella vecchia e ricrea con nuova struttura
+            drop_table = sql_text(f'DROP TABLE IF EXISTS {table_name} CASCADE')
+            await session.execute(drop_table)
+            
+            # Ricrea con nuova struttura
+            create_consumi = sql_text(f"""
+                CREATE TABLE {table_name} (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                    data TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                    Prodotto VARCHAR(200) NOT NULL,
+                    prodotto_rifornito INTEGER DEFAULT NULL,
+                    prodotto_consumato INTEGER DEFAULT NULL
+                )
+            """)
+            await session.execute(create_consumi)
+            await session.commit()
+            
+            logger.info(f"Table {table_name} migrated successfully")
+        
+    except Exception as e:
+        logger.error(f"Error migrating table {table_name}: {e}")
+        # Non bloccare l'esecuzione se la migrazione fallisce
+
 def get_user_table_name(telegram_id: int, business_name: str, table_type: str) -> str:
     """
     Genera nome tabella nel formato: "{telegram_id}/{business_name} {table_type}"
@@ -219,6 +273,9 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
                 )
             """)
             await session.execute(create_consumi)
+        else:
+            # Tabella esiste già - verifica se ha struttura vecchia e migra
+            await migrate_consumi_table_if_needed(session, table_consumi)
             
             await session.commit()
             logger.info(f"Created tables for {telegram_id}/{business_name}: INVENTARIO, INVENTARIO backup, LOG interazione, Consumi e rifornimenti")
