@@ -476,41 +476,50 @@ async def get_status(telegram_id: int):
         logger.error(f"Error getting status for telegram_id {telegram_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")
 
-@app.post("/inventory-movement")
-async def process_inventory_movement(
-    telegram_id: int = Form(...),
-    business_name: str = Form(...),
-    wine_name: str = Form(...),
-    movement_type: str = Form(...),  # 'consumo' o 'rifornimento'
-    quantity: int = Form(...),
-    notes: str = Form(None)
+async def process_movement_background(
+    job_id: str,
+    telegram_id: int,
+    business_name: str,
+    wine_name: str,
+    movement_type: str,  # 'consumo' o 'rifornimento'
+    quantity: int
 ):
     """
-    Processa movimento inventario (consumo o rifornimento).
-    Aggiorna quantità vino e salva log.
+    Elabora movimento inventario in background (chiamata asincrona).
+    Usa il nome corretto del prodotto dal database.
     """
+    start_time = datetime.utcnow()
+    
     try:
-        from sqlalchemy import text as sql_text
-        
-        if movement_type not in ['consumo', 'rifornimento']:
-            raise HTTPException(status_code=400, detail="movement_type deve essere 'consumo' o 'rifornimento'")
-        
-        if quantity <= 0:
-            raise HTTPException(status_code=400, detail="quantity deve essere > 0")
-        
         async for db in get_db():
+            from sqlalchemy import text as sql_text
+            
+            # Aggiorna job status a processing
+            stmt = select(ProcessingJob).where(ProcessingJob.job_id == job_id)
+            result = await db.execute(stmt)
+            job = result.scalar_one()
+            
+            job.status = 'processing'
+            job.started_at = datetime.utcnow()
+            await db.commit()
+            
+            logger.info(f"Job {job_id}: Started processing movement for telegram_id: {telegram_id}, {movement_type} {quantity} {wine_name}")
+            
             # Trova utente
             stmt = select(User).where(User.telegram_id == telegram_id)
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
             
             if not user:
-                raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
+                job.status = 'error'
+                job.error_message = f"Utente {telegram_id} non trovato"
+                job.completed_at = datetime.utcnow()
+                await db.commit()
+                return
             
             # Ottieni nome tabelle
             table_inventario = get_user_table_name(telegram_id, business_name, "INVENTARIO")
             table_consumi = get_user_table_name(telegram_id, business_name, "Consumi e rifornimenti")
-            table_log = get_user_table_name(telegram_id, business_name, "LOG interazione")
             
             # Cerca vino nell'inventario (matching intelligente)
             search_wine = sql_text(f"""
@@ -531,32 +540,30 @@ async def process_inventory_movement(
             wine_row = result.fetchone()
             
             if not wine_row:
-                return {
-                    "status": "error",
-                    "error": "wine_not_found",
-                    "message": f"Vino '{wine_name}' non trovato nell'inventario",
-                    "telegram_id": telegram_id
-                }
+                job.status = 'error'
+                job.error_message = f"Vino '{wine_name}' non trovato nell'inventario"
+                job.completed_at = datetime.utcnow()
+                await db.commit()
+                return
             
             # Ottieni quantità corrente
             quantity_before = wine_row.quantity if wine_row.quantity else 0
             
             # Calcola nuova quantità
             if movement_type == 'consumo':
-                quantity_change = -quantity  # Negativo per consumo
                 if quantity_before < quantity:
-                    return {
-                        "status": "error",
-                        "error": "insufficient_quantity",
-                        "message": f"Quantità insufficiente: disponibili {quantity_before}, richieste {quantity}",
-                        "telegram_id": telegram_id,
-                        "wine_name": wine_row.name,
-                        "available_quantity": quantity_before
-                    }
+                    job.status = 'error'
+                    job.error_message = f"Quantità insufficiente: disponibili {quantity_before}, richieste {quantity}"
+                    job.completed_at = datetime.utcnow()
+                    await db.commit()
+                    return
+                quantity_after = quantity_before - quantity
+                prodotto_rifornito = None
+                prodotto_consumato = quantity
             else:  # rifornimento
-                quantity_change = quantity  # Positivo per rifornimento
-            
-            quantity_after = quantity_before + quantity_change
+                quantity_after = quantity_before + quantity
+                prodotto_rifornito = quantity
+                prodotto_consumato = None
             
             # Aggiorna quantità vino
             update_wine = sql_text(f"""
@@ -570,66 +577,128 @@ async def process_inventory_movement(
                 "wine_id": wine_row.id
             })
             
-            # Salva in tabella "Consumi e rifornimenti"
+            # Salva in tabella "Consumi e rifornimenti" con nuova struttura
             insert_movement = sql_text(f"""
                 INSERT INTO {table_consumi}
-                (user_id, wine_name, wine_producer, movement_type, quantity_change, 
-                 quantity_before, quantity_after, notes, movement_date)
+                (user_id, data, Prodotto, prodotto_rifornito, prodotto_consumato)
                 VALUES
-                (:user_id, :wine_name, :wine_producer, :movement_type, :quantity_change,
-                 :quantity_before, :quantity_after, :notes, CURRENT_TIMESTAMP)
+                (:user_id, CURRENT_TIMESTAMP, :prodotto, :prodotto_rifornito, :prodotto_consumato)
                 RETURNING id
             """)
             await db.execute(insert_movement, {
                 "user_id": user.id,
-                "wine_name": wine_row.name,
-                "wine_producer": wine_row.producer,
-                "movement_type": movement_type,
-                "quantity_change": quantity_change,
-                "quantity_before": quantity_before,
-                "quantity_after": quantity_after,
-                "notes": notes or f"{movement_type.capitalize()} di {quantity} bottiglie"
-            })
-            
-            # Salva anche in "LOG interazione"
-            interaction_note = f"{movement_type.capitalize()}: {quantity} bottiglie di {wine_row.name}"
-            if notes:
-                interaction_note += f" - {notes}"
-            
-            insert_log = sql_text(f"""
-                INSERT INTO {table_log}
-                (user_id, interaction_type, interaction_data, notes, created_at)
-                VALUES
-                (:user_id, :interaction_type, :interaction_data, :notes, CURRENT_TIMESTAMP)
-            """)
-            await db.execute(insert_log, {
-                "user_id": user.id,
-                "interaction_type": "movement",
-                "interaction_data": f"{movement_type}: {wine_row.name}, {quantity} bottiglie",
-                "notes": interaction_note
+                "prodotto": wine_row.name,  # Nome corretto dal database
+                "prodotto_rifornito": prodotto_rifornito,
+                "prodotto_consumato": prodotto_consumato
             })
             
             await db.commit()
             
-            logger.info(f"Movement processed: {telegram_id}/{business_name} - {movement_type} {quantity} {wine_row.name}")
+            processing_time = (datetime.utcnow() - start_time).total_seconds()
             
-            return {
+            # Prepara risultato
+            result_data = {
                 "status": "success",
                 "movement_type": movement_type,
-                "wine_name": wine_row.name,
-                "wine_producer": wine_row.producer,
+                "wine_name": wine_row.name,  # Nome corretto dal database
                 "quantity": quantity,
                 "quantity_before": quantity_before,
                 "quantity_after": quantity_after,
                 "telegram_id": telegram_id,
-                "business_name": business_name
+                "business_name": business_name,
+                "processing_time_seconds": round(processing_time, 2)
             }
             
+            # Aggiorna job come completato
+            job.status = 'completed'
+            job.result_data = json.dumps(result_data)
+            job.completed_at = datetime.utcnow()
+            await db.commit()
+            
+            logger.info(f"Job {job_id}: Movement processed successfully - {movement_type} {quantity} {wine_row.name}")
+            break
+            
+    except Exception as e:
+        logger.error(f"Job {job_id}: Unexpected error: {e}")
+        try:
+            async for db in get_db():
+                stmt = select(ProcessingJob).where(ProcessingJob.job_id == job_id)
+                result = await db.execute(stmt)
+                job = result.scalar_one()
+                job.status = 'error'
+                job.error_message = f"Unexpected error: {str(e)}"
+                job.completed_at = datetime.utcnow()
+                await db.commit()
+                break
+        except:
+            pass
+
+@app.post("/process-movement")
+async def process_movement(
+    telegram_id: int = Form(...),
+    business_name: str = Form(...),
+    wine_name: str = Form(...),
+    movement_type: str = Form(...),  # 'consumo' o 'rifornimento'
+    quantity: int = Form(...)
+):
+    """
+    Crea job di elaborazione movimento inventario e ritorna job_id immediatamente.
+    L'elaborazione avviene in background.
+    """
+    try:
+        logger.info(f"Creating movement job for telegram_id: {telegram_id}, business: {business_name}, {movement_type} {quantity} {wine_name}")
+        
+        # Validazione input
+        if movement_type not in ['consumo', 'rifornimento']:
+            raise HTTPException(status_code=400, detail="movement_type deve essere 'consumo' o 'rifornimento'")
+        
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail="quantity deve essere > 0")
+        
+        # Genera job_id univoco
+        job_id = str(uuid.uuid4())
+        
+        # Crea job nel database
+        async for db in get_db():
+            job = ProcessingJob(
+                job_id=job_id,
+                telegram_id=telegram_id,
+                business_name=business_name,
+                status='pending',
+                file_type='movement',  # Tipo speciale per movimenti
+                file_name=f"{movement_type}_{wine_name}_{quantity}"
+            )
+            db.add(job)
+            await db.commit()
+            break
+        
+        logger.info(f"Movement job {job_id} created, starting background processing")
+        
+        # Avvia elaborazione in background
+        asyncio.create_task(
+            process_movement_background(
+                job_id=job_id,
+                telegram_id=telegram_id,
+                business_name=business_name,
+                wine_name=wine_name,
+                movement_type=movement_type,
+                quantity=quantity
+            )
+        )
+        
+        # Ritorna job_id immediatamente
+        return {
+            "status": "processing",
+            "job_id": job_id,
+            "message": f"Movimento {movement_type} avviato. Usa /status/{job_id} per verificare lo stato.",
+            "telegram_id": telegram_id
+        }
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing inventory movement: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing movement: {str(e)}")
+        logger.error(f"Error creating movement job: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/ai/status")
 async def ai_status():

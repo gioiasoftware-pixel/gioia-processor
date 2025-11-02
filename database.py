@@ -207,18 +207,15 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
             await session.execute(create_log)
             
             # Crea tabella Consumi e rifornimenti
+            # Struttura nuova: data, Prodotto, prodotto_rifornito, prodotto_consumato
             create_consumi = sql_text(f"""
                 CREATE TABLE IF NOT EXISTS {table_consumi} (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-                    wine_name VARCHAR(200) NOT NULL,
-                    wine_producer VARCHAR(200),
-                    movement_type VARCHAR(20) NOT NULL,
-                    quantity_change INTEGER NOT NULL,
-                    quantity_before INTEGER NOT NULL,
-                    quantity_after INTEGER NOT NULL,
-                    notes TEXT,
-                    movement_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    data TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                    Prodotto VARCHAR(200) NOT NULL,
+                    prodotto_rifornito INTEGER DEFAULT NULL,
+                    prodotto_consumato INTEGER DEFAULT NULL
                 )
             """)
             await session.execute(create_consumi)
