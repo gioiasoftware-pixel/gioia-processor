@@ -273,14 +273,13 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
                 )
             """)
             await session.execute(create_consumi)
-        else:
-            # Tabella esiste già - verifica se ha struttura vecchia e migra
-            await migrate_consumi_table_if_needed(session, table_consumi)
             
             await session.commit()
             logger.info(f"Created tables for {telegram_id}/{business_name}: INVENTARIO, INVENTARIO backup, LOG interazione, Consumi e rifornimenti")
         else:
-            logger.info(f"Tables already exist for {telegram_id}/{business_name}")
+            # Tabella esiste già - verifica se ha struttura vecchia e migra
+            await migrate_consumi_table_if_needed(session, table_consumi)
+            logger.info(f"Tables already exist for {telegram_id}/{business_name}, migration checked if needed")
         
         return {
             "inventario": table_inventario,
