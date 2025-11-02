@@ -9,15 +9,15 @@ logger = logging.getLogger(__name__)
 
 # Dizionario completo di mapping colonne - mantiene scalabilità garantendo che tutti i database abbiano le stesse colonne
 COLUMN_MAPPINGS = {
-    'name': ['nome', 'vino', 'wine', 'wine name', 'denominazione', 'denominazione vino', 'nome vino', 'wine name'],
+    'name': ['nome', 'vino', 'wine', 'wine name', 'nome vino'],
     'vintage': ['annata', 'year', 'vintage', 'anno', 'anno produzione', 'vintage year'],
     'producer': ['produttore', 'producer', 'winery', 'azienda', 'casa vinicola', 'marca', 'brand'],
     'grape_variety': ['uvaggio', 'vitigno', 'grape variety', 'varietà', 'grape_variety', 'grape', 'grapes', 'vitigni', 'varietà uva'],
-    'region': ['regione', 'region', 'zona', 'area', 'area geografica', 'zona geografica'],
+    'region': ['regione', 'region', 'zona', 'area', 'area geografica', 'zona geografica', 'denominazione', 'regione/denominazione'],
     'country': ['paese', 'country', 'nazione', 'nation', 'paese di origine'],
     'wine_type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino'],
-    'classification': ['classificazione', 'classification', 'doc', 'docg', 'igt', 'dop', 'igp', 'denominazione'],
-    'quantity': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta'],
+    'classification': ['classificazione', 'classification', 'doc', 'docg', 'igt', 'dop', 'igp'],
+    'quantity': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta', 'qta_magazzino', 'qta magazzino'],
     'min_quantity': ['scorta minima', 'min quantity', 'quantità minima', 'min qty', 'scorta min'],
     'cost_price': ['costo', 'cost', 'prezzo acquisto', 'prezzo di acquisto', 'prezzo acquisto', 'costo unitario', 'costo per bottiglia'],
     'selling_price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta'],
@@ -40,43 +40,65 @@ def find_column_mapping(col_name: str, column_mappings: Dict[str, List[str]]) ->
     """
     Trova il mapping per una colonna data.
     Cerca prima corrispondenza esatta, poi parziale (contains).
+    Da priorità a match più specifici e più lunghi.
     
     Returns:
         Nome colonna standardizzato o None se non trovato
     """
     normalized_col = normalize_column_name(col_name)
     
-    # Cerca corrispondenza esatta prima
+    # Cerca corrispondenza esatta prima (priorità massima)
     for standard_name, variants in column_mappings.items():
         for variant in variants:
             normalized_variant = normalize_column_name(variant)
             if normalized_col == normalized_variant:
                 return standard_name
     
-    # Cerca corrispondenza parziale (contains)
+    # Cerca corrispondenza parziale (priorità a match più lunghi e specifici)
+    best_match = None
+    best_match_length = 0
+    best_match_type = 0  # 0=none, 1=generic (col in variant), 2=specific (variant in col)
+    
     for standard_name, variants in column_mappings.items():
         for variant in variants:
             normalized_variant = normalize_column_name(variant)
-            # Controlla se il nome colonna contiene la variante o viceversa
-            if normalized_variant in normalized_col or normalized_col in normalized_variant:
-                return standard_name
+            # Match specifico: la variante è contenuta nel nome colonna (es. "regione" in "regione/denominazione")
+            if normalized_variant in normalized_col:
+                variant_len = len(normalized_variant)
+                # Priorità a match più lunghi e specifici
+                if variant_len > best_match_length or (variant_len == best_match_length and best_match_type < 2):
+                    best_match = standard_name
+                    best_match_length = variant_len
+                    best_match_type = 2
+            # Match generico: il nome colonna è contenuto nella variante (priorità minore)
+            elif normalized_col in normalized_variant:
+                col_len = len(normalized_col)
+                # Accetta solo se non c'è già un match specifico migliore
+                if best_match_type < 2 or (best_match_type == 1 and col_len > best_match_length):
+                    best_match = standard_name
+                    best_match_length = col_len
+                    best_match_type = 1
     
-    return None
+    return best_match
 
 def create_smart_column_mapping(original_columns: List[str]) -> Dict[str, str]:
     """
     Crea mapping intelligente tra colonne originali e nomi standardizzati.
     Usa il dizionario COLUMN_MAPPINGS per trovare corrispondenze.
+    Evita conflitti: se una colonna standard è già mappata, non la rimappa.
     
     Returns:
         Dict con mapping {'nome colonna originale': 'nome standardizzato'}
     """
     rename_mapping = {}
+    mapped_standard_names = set()  # Traccia colonne standard già mappate
     
+    # Prima passata: cerca match esatti e specifici
     for orig_col in original_columns:
         standard_name = find_column_mapping(orig_col, COLUMN_MAPPINGS)
-        if standard_name:
+        if standard_name and standard_name not in mapped_standard_names:
             rename_mapping[orig_col] = standard_name
+            mapped_standard_names.add(standard_name)
             logger.debug(f"Mapped '{orig_col}' -> '{standard_name}'")
     
     logger.info(f"Smart mapping created: {len(rename_mapping)}/{len(original_columns)} columns mapped")
@@ -141,6 +163,14 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
         
         logger.info(f"Final columns after mapping: {list(df.columns)}")
         
+        # Controlla colonne duplicate dopo mapping
+        if len(df.columns) != len(set(df.columns)):
+            duplicates = [col for col in df.columns if list(df.columns).count(col) > 1]
+            logger.warning(f"ATTENZIONE: Colonne duplicate dopo mapping: {set(duplicates)}")
+            # Rimuovi duplicati mantenendo la prima occorrenza
+            df = df.loc[:, ~df.columns.duplicated()]
+            logger.info(f"Colonne dopo rimozione duplicati: {list(df.columns)}")
+        
         wines_data = []
         
         for index, row in df.iterrows():
@@ -148,8 +178,10 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
                 wine_data = extract_wine_data_from_row(row)
                 if wine_data and wine_data.get('name'):
                     wines_data.append(wine_data)
+                else:
+                    logger.debug(f"Row {index} skipped: wine_data={wine_data}, has_name={wine_data.get('name') if wine_data else False}")
             except Exception as e:
-                logger.warning(f"Error processing row {index}: {e}")
+                logger.warning(f"Error processing row {index}: {e}", exc_info=True)
                 continue
         
         # Usa AI per validare e filtrare vini (batch, costo ridotto)
@@ -225,6 +257,14 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
         
         logger.info(f"Final columns after mapping: {list(df.columns)}")
         
+        # Controlla colonne duplicate dopo mapping
+        if len(df.columns) != len(set(df.columns)):
+            duplicates = [col for col in df.columns if list(df.columns).count(col) > 1]
+            logger.warning(f"ATTENZIONE: Colonne duplicate dopo mapping: {set(duplicates)}")
+            # Rimuovi duplicati mantenendo la prima occorrenza
+            df = df.loc[:, ~df.columns.duplicated()]
+            logger.info(f"Colonne dopo rimozione duplicati: {list(df.columns)}")
+        
         wines_data = []
         
         for index, row in df.iterrows():
@@ -232,8 +272,10 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
                 wine_data = extract_wine_data_from_row(row)
                 if wine_data and wine_data.get('name'):
                     wines_data.append(wine_data)
+                else:
+                    logger.debug(f"Row {index} skipped: wine_data={wine_data}, has_name={wine_data.get('name') if wine_data else False}")
             except Exception as e:
-                logger.warning(f"Error processing row {index}: {e}")
+                logger.warning(f"Error processing row {index}: {e}", exc_info=True)
                 continue
         
         # Usa AI per validare e filtrare vini (batch, costo ridotto)
