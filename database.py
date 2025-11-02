@@ -344,24 +344,52 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                     warnings.append(f"Errore conversione quantità '{quantity_original}': {e} - impostata a 1")
                     quantity = 1
                 
-                # Normalizza price: converti a float
-                price = wine_data.get("price")
-                price_original = price
-                if price:
+                # Normalizza cost_price: converti a float
+                cost_price = wine_data.get("cost_price")
+                cost_price_original = cost_price
+                if cost_price:
                     try:
-                        if isinstance(price, str):
+                        if isinstance(cost_price, str):
                             import re
-                            price_clean = re.sub(r'[^\d.,]', '', str(price).replace(',', '.'))
-                            price = float(price_clean) if price_clean else None
-                            if price is None:
-                                warnings.append(f"Prezzo '{price_original}' non valido - salvato senza prezzo")
+                            cost_clean = re.sub(r'[^\d.,]', '', str(cost_price).replace(',', '.'))
+                            cost_price = float(cost_clean) if cost_clean else None
+                            if cost_price is None:
+                                warnings.append(f"Costo acquisto '{cost_price_original}' non valido - salvato senza costo")
                         else:
-                            price = float(price) if price else None
-                            if price and price < 0:
-                                warnings.append(f"Prezzo negativo {price} - salvato comunque")
+                            cost_price = float(cost_price) if cost_price else None
+                            if cost_price and cost_price < 0:
+                                warnings.append(f"Costo negativo {cost_price} - salvato comunque")
                     except (ValueError, TypeError) as e:
-                        warnings.append(f"Errore conversione prezzo '{price_original}': {e} - salvato senza prezzo")
-                        price = None
+                        warnings.append(f"Errore conversione costo '{cost_price_original}': {e} - salvato senza costo")
+                        cost_price = None
+                else:
+                    cost_price = None
+                
+                # Normalizza selling_price: converti a float
+                selling_price = wine_data.get("selling_price")
+                selling_price_original = selling_price
+                # Fallback: se non c'è selling_price ma c'è 'price', usa quello (compatibilità)
+                if not selling_price and wine_data.get("price"):
+                    selling_price = wine_data.get("price")
+                    selling_price_original = selling_price
+                
+                if selling_price:
+                    try:
+                        if isinstance(selling_price, str):
+                            import re
+                            price_clean = re.sub(r'[^\d.,]', '', str(selling_price).replace(',', '.'))
+                            selling_price = float(price_clean) if price_clean else None
+                            if selling_price is None:
+                                warnings.append(f"Prezzo vendita '{selling_price_original}' non valido - salvato senza prezzo")
+                        else:
+                            selling_price = float(selling_price) if selling_price else None
+                            if selling_price and selling_price < 0:
+                                warnings.append(f"Prezzo negativo {selling_price} - salvato comunque")
+                    except (ValueError, TypeError) as e:
+                        warnings.append(f"Errore conversione prezzo '{selling_price_original}': {e} - salvato senza prezzo")
+                        selling_price = None
+                else:
+                    selling_price = None
                 
                 # Normalizza alcohol_content: converti stringa con % a float
                 alcohol_content = wine_data.get("alcohol_content")
@@ -425,8 +453,8 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                     "classification": wine_data.get("classification"),
                     "quantity": quantity,
                     "min_quantity": wine_data.get("min_quantity", 0),
-                    "cost_price": wine_data.get("cost_price"),
-                    "selling_price": price,
+                    "cost_price": cost_price,
+                    "selling_price": selling_price,
                     "alcohol_content": alcohol_content,
                     "description": wine_data.get("description"),
                     "notes": combined_notes,

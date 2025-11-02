@@ -2,37 +2,122 @@ import pandas as pd
 import io
 import re
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from ai_processor import ai_processor
 
 logger = logging.getLogger(__name__)
 
+# Dizionario completo di mapping colonne - mantiene scalabilità garantendo che tutti i database abbiano le stesse colonne
+COLUMN_MAPPINGS = {
+    'name': ['nome', 'vino', 'wine', 'wine name', 'denominazione', 'denominazione vino', 'nome vino', 'wine name'],
+    'vintage': ['annata', 'year', 'vintage', 'anno', 'anno produzione', 'vintage year'],
+    'producer': ['produttore', 'producer', 'winery', 'azienda', 'casa vinicola', 'marca', 'brand'],
+    'grape_variety': ['uvaggio', 'vitigno', 'grape variety', 'varietà', 'grape_variety', 'grape', 'grapes', 'vitigni', 'varietà uva'],
+    'region': ['regione', 'region', 'zona', 'area', 'area geografica', 'zona geografica'],
+    'country': ['paese', 'country', 'nazione', 'nation', 'paese di origine'],
+    'wine_type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino'],
+    'classification': ['classificazione', 'classification', 'doc', 'docg', 'igt', 'dop', 'igp', 'denominazione'],
+    'quantity': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta'],
+    'min_quantity': ['scorta minima', 'min quantity', 'quantità minima', 'min qty', 'scorta min'],
+    'cost_price': ['costo', 'cost', 'prezzo acquisto', 'prezzo di acquisto', 'prezzo acquisto', 'costo unitario', 'costo per bottiglia'],
+    'selling_price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta'],
+    'alcohol_content': ['alcol', 'alcohol', 'gradazione', 'abv', 'alc.', '% vol', '%vol', 'grado alcolico', 'alc %', 'alcohol %'],
+    'description': ['descrizione', 'description', 'note', 'note vino', 'note prodotto'],
+    'notes': ['note', 'notes', 'osservazioni', 'osservazioni vino', 'note aggiuntive']
+}
+
+def normalize_column_name(col_name: str) -> str:
+    """
+    Normalizza nome colonna per matching: lowercase, strip, rimuove spazi multipli
+    """
+    if not col_name:
+        return ""
+    normalized = str(col_name).lower().strip()
+    normalized = re.sub(r'\s+', ' ', normalized)  # Rimuove spazi multipli
+    return normalized
+
+def find_column_mapping(col_name: str, column_mappings: Dict[str, List[str]]) -> Optional[str]:
+    """
+    Trova il mapping per una colonna data.
+    Cerca prima corrispondenza esatta, poi parziale (contains).
+    
+    Returns:
+        Nome colonna standardizzato o None se non trovato
+    """
+    normalized_col = normalize_column_name(col_name)
+    
+    # Cerca corrispondenza esatta prima
+    for standard_name, variants in column_mappings.items():
+        for variant in variants:
+            normalized_variant = normalize_column_name(variant)
+            if normalized_col == normalized_variant:
+                return standard_name
+    
+    # Cerca corrispondenza parziale (contains)
+    for standard_name, variants in column_mappings.items():
+        for variant in variants:
+            normalized_variant = normalize_column_name(variant)
+            # Controlla se il nome colonna contiene la variante o viceversa
+            if normalized_variant in normalized_col or normalized_col in normalized_variant:
+                return standard_name
+    
+    return None
+
+def create_smart_column_mapping(original_columns: List[str]) -> Dict[str, str]:
+    """
+    Crea mapping intelligente tra colonne originali e nomi standardizzati.
+    Usa il dizionario COLUMN_MAPPINGS per trovare corrispondenze.
+    
+    Returns:
+        Dict con mapping {'nome colonna originale': 'nome standardizzato'}
+    """
+    rename_mapping = {}
+    
+    for orig_col in original_columns:
+        standard_name = find_column_mapping(orig_col, COLUMN_MAPPINGS)
+        if standard_name:
+            rename_mapping[orig_col] = standard_name
+            logger.debug(f"Mapped '{orig_col}' -> '{standard_name}'")
+    
+    logger.info(f"Smart mapping created: {len(rename_mapping)}/{len(original_columns)} columns mapped")
+    return rename_mapping
+
 async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
     """
-    Processa file CSV e estrae dati sui vini usando AI
+    Processa file CSV e estrae dati sui vini usando mapping intelligente + AI opzionale
     """
     try:
         # Leggi CSV da bytes
         df = pd.read_csv(io.BytesIO(file_content))
         logger.info(f"CSV loaded with {len(df)} rows and {len(df.columns)} columns")
         
-        # Usa AI per analizzare struttura CSV
-        csv_text = df.to_string()
-        ai_analysis = await ai_processor.analyze_csv_structure(csv_text)
-        
         # Salva colonne originali
         original_columns = list(df.columns)
         logger.info(f"Original columns: {original_columns}")
         
-        # Crea mapping per rinominare colonne
-        # AI restituisce: {'name': 'Wine Name', 'vintage': 'Vintage', ...}
-        # Pandas rename vuole: {'Wine Name': 'name', 'Vintage': 'vintage', ...}
-        rename_mapping = {}
+        # PRIMA: Prova mapping intelligente automatico (senza AI)
+        smart_mapping = create_smart_column_mapping(original_columns)
         
-        if ai_analysis.get('column_mapping'):
-            ai_mapping = ai_analysis['column_mapping']
-            logger.info(f"AI detected column mapping: {ai_mapping}")
-            
+        # SECONDA: Usa AI solo se mapping intelligente non copre tutte le colonne importanti
+        ai_analysis = None
+        ai_mapping = {}
+        
+        # Verifica se mapping intelligente ha trovato le colonne chiave
+        key_columns = ['name', 'producer', 'vintage']
+        mapped_key_columns = [col for col in key_columns if col in smart_mapping.values()]
+        
+        if len(mapped_key_columns) < 2:  # Se mancano troppe colonne chiave, usa AI
+            logger.info("Smart mapping insufficiente, usando AI per completare")
+            csv_text = df.to_string()
+            ai_analysis = await ai_processor.analyze_csv_structure(csv_text)
+            ai_mapping = ai_analysis.get('column_mapping', {})
+        else:
+            logger.info(f"Smart mapping sufficiente ({len(mapped_key_columns)}/{len(key_columns)} key columns), skipping AI")
+        
+        # Combina mapping intelligente e AI (AI ha priorità se c'è conflitto)
+        rename_mapping = smart_mapping.copy()
+        
+        if ai_mapping:
             # Inverti mapping AI: da {'name': 'Wine Name'} a {'Wine Name': 'name'}
             for standard_name, original_col_name in ai_mapping.items():
                 # Cerca colonna originale (case-sensitive prima)
@@ -41,31 +126,18 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
                 else:
                     # Fallback case-insensitive
                     for orig_col in original_columns:
-                        if orig_col.lower().strip() == original_col_name.lower().strip():
+                        if normalize_column_name(orig_col) == normalize_column_name(original_col_name):
                             rename_mapping[orig_col] = standard_name
                             break
-            
-            logger.info(f"Rename mapping (inverted): {rename_mapping}")
-        else:
-            # Fallback: normalizza prima, poi mappa
-            df.columns = df.columns.str.lower().str.strip()
-            rename_mapping = {
-                'nome': 'name', 'vino': 'name', 'wine': 'name', 'wine name': 'name',
-                'annata': 'vintage', 'year': 'vintage', 'vintage': 'vintage',
-                'produttore': 'producer', 'producer': 'producer', 'winery': 'producer',
-                'regione': 'region', 'region': 'region',
-                'prezzo': 'price', 'price': 'price', 'cost (eur)': 'price', 'cost': 'price',
-                'quantità': 'quantity', 'qty': 'quantity', 'quantity': 'quantity',
-                'tipo': 'wine_type', 'type': 'wine_type', "grape(s)": 'wine_type', 'grape': 'wine_type'
-            }
         
-        # Rinomina colonne usando il mapping (su colonne originali se mapping AI)
+        logger.info(f"Final rename mapping: {rename_mapping}")
+        
+        # Rinomina colonne usando il mapping
         if rename_mapping:
             df = df.rename(columns=rename_mapping)
         
-        # Se non era mapping AI, normalizza le colonne rimanenti
-        if not ai_analysis.get('column_mapping'):
-            df.columns = df.columns.str.lower().str.strip()
+        # Normalizza le colonne rimanenti (lowercase, strip)
+        df.columns = [normalize_column_name(col) for col in df.columns]
         
         logger.info(f"Final columns after mapping: {list(df.columns)}")
         
@@ -75,19 +147,19 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
             try:
                 wine_data = extract_wine_data_from_row(row)
                 if wine_data and wine_data.get('name'):
-                    # Usa direttamente i dati estratti (miglioramento AI rimosso per ridurre costi)
                     wines_data.append(wine_data)
             except Exception as e:
                 logger.warning(f"Error processing row {index}: {e}")
                 continue
         
-        # Usa AI per validare e filtrare vini
+        # Usa AI per validare e filtrare vini (batch, costo ridotto)
         validated_wines = await ai_processor.validate_wine_data(wines_data)
         
         # Filtra vini (ora accetta tutti i vini)
         filtered_wines = filter_italian_wines(validated_wines)
         
-        logger.info(f"AI processed {len(filtered_wines)} wines from CSV (confidence: {ai_analysis.get('confidence', 0)})")
+        confidence = ai_analysis.get('confidence', 0.9) if ai_analysis else 0.9  # 0.9 se usato solo smart mapping
+        logger.info(f"Processed {len(filtered_wines)} wines from CSV (confidence: {confidence})")
         return filtered_wines
         
     except Exception as e:
@@ -96,30 +168,40 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
 
 async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
     """
-    Processa file Excel e estrae dati sui vini usando AI
+    Processa file Excel e estrae dati sui vini usando mapping intelligente + AI opzionale
     """
     try:
         # Leggi Excel da bytes
         df = pd.read_excel(io.BytesIO(file_content))
         logger.info(f"Excel loaded with {len(df)} rows and {len(df.columns)} columns")
         
-        # Usa AI per analizzare struttura Excel
-        excel_text = df.to_string()
-        ai_analysis = await ai_processor.analyze_csv_structure(excel_text)
-        
         # Salva colonne originali
         original_columns = list(df.columns)
         logger.info(f"Original columns: {original_columns}")
         
-        # Crea mapping per rinominare colonne
-        # AI restituisce: {'name': 'Wine Name', 'vintage': 'Vintage', ...}
-        # Pandas rename vuole: {'Wine Name': 'name', 'Vintage': 'vintage', ...}
-        rename_mapping = {}
+        # PRIMA: Prova mapping intelligente automatico (senza AI)
+        smart_mapping = create_smart_column_mapping(original_columns)
         
-        if ai_analysis.get('column_mapping'):
-            ai_mapping = ai_analysis['column_mapping']
-            logger.info(f"AI detected column mapping: {ai_mapping}")
-            
+        # SECONDA: Usa AI solo se mapping intelligente non copre tutte le colonne importanti
+        ai_analysis = None
+        ai_mapping = {}
+        
+        # Verifica se mapping intelligente ha trovato le colonne chiave
+        key_columns = ['name', 'producer', 'vintage']
+        mapped_key_columns = [col for col in key_columns if col in smart_mapping.values()]
+        
+        if len(mapped_key_columns) < 2:  # Se mancano troppe colonne chiave, usa AI
+            logger.info("Smart mapping insufficiente, usando AI per completare")
+            excel_text = df.to_string()
+            ai_analysis = await ai_processor.analyze_csv_structure(excel_text)
+            ai_mapping = ai_analysis.get('column_mapping', {})
+        else:
+            logger.info(f"Smart mapping sufficiente ({len(mapped_key_columns)}/{len(key_columns)} key columns), skipping AI")
+        
+        # Combina mapping intelligente e AI (AI ha priorità se c'è conflitto)
+        rename_mapping = smart_mapping.copy()
+        
+        if ai_mapping:
             # Inverti mapping AI: da {'name': 'Wine Name'} a {'Wine Name': 'name'}
             for standard_name, original_col_name in ai_mapping.items():
                 # Cerca colonna originale (case-sensitive prima)
@@ -128,31 +210,18 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
                 else:
                     # Fallback case-insensitive
                     for orig_col in original_columns:
-                        if orig_col.lower().strip() == original_col_name.lower().strip():
+                        if normalize_column_name(orig_col) == normalize_column_name(original_col_name):
                             rename_mapping[orig_col] = standard_name
                             break
-            
-            logger.info(f"Rename mapping (inverted): {rename_mapping}")
-        else:
-            # Fallback: normalizza prima, poi mappa
-            df.columns = df.columns.str.lower().str.strip()
-            rename_mapping = {
-                'nome': 'name', 'vino': 'name', 'wine': 'name', 'wine name': 'name',
-                'annata': 'vintage', 'year': 'vintage', 'vintage': 'vintage',
-                'produttore': 'producer', 'producer': 'producer', 'winery': 'producer',
-                'regione': 'region', 'region': 'region',
-                'prezzo': 'price', 'price': 'price', 'cost (eur)': 'price', 'cost': 'price',
-                'quantità': 'quantity', 'qty': 'quantity', 'quantity': 'quantity',
-                'tipo': 'wine_type', 'type': 'wine_type', "grape(s)": 'wine_type', 'grape': 'wine_type'
-            }
         
-        # Rinomina colonne usando il mapping (su colonne originali se mapping AI)
+        logger.info(f"Final rename mapping: {rename_mapping}")
+        
+        # Rinomina colonne usando il mapping
         if rename_mapping:
             df = df.rename(columns=rename_mapping)
         
-        # Se non era mapping AI, normalizza le colonne rimanenti
-        if not ai_analysis.get('column_mapping'):
-            df.columns = df.columns.str.lower().str.strip()
+        # Normalizza le colonne rimanenti (lowercase, strip)
+        df.columns = [normalize_column_name(col) for col in df.columns]
         
         logger.info(f"Final columns after mapping: {list(df.columns)}")
         
@@ -162,19 +231,19 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
             try:
                 wine_data = extract_wine_data_from_row(row)
                 if wine_data and wine_data.get('name'):
-                    # Usa direttamente i dati estratti (miglioramento AI rimosso per ridurre costi)
                     wines_data.append(wine_data)
             except Exception as e:
                 logger.warning(f"Error processing row {index}: {e}")
                 continue
         
-        # Usa AI per validare e filtrare vini
+        # Usa AI per validare e filtrare vini (batch, costo ridotto)
         validated_wines = await ai_processor.validate_wine_data(wines_data)
         
         # Filtra vini (ora accetta tutti i vini)
         filtered_wines = filter_italian_wines(validated_wines)
         
-        logger.info(f"AI processed {len(filtered_wines)} wines from Excel (confidence: {ai_analysis.get('confidence', 0)})")
+        confidence = ai_analysis.get('confidence', 0.9) if ai_analysis else 0.9  # 0.9 se usato solo smart mapping
+        logger.info(f"Processed {len(filtered_wines)} wines from Excel (confidence: {confidence})")
         return filtered_wines
         
     except Exception as e:
@@ -183,41 +252,52 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
 
 def extract_wine_data_from_row(row: pd.Series) -> Dict[str, Any]:
     """
-    Estrae dati vino da una riga del DataFrame
+    Estrae dati vino da una riga del DataFrame.
+    Estrae TUTTI i campi dello schema database per garantire scalabilità.
     """
     wine_data = {}
     
-    # Nome vino
+    # Nome vino (obbligatorio)
     if 'name' in row and pd.notna(row['name']):
         wine_data['name'] = str(row['name']).strip()
     
-    # Annata
+    # Annata (vintage)
     if 'vintage' in row and pd.notna(row['vintage']):
         vintage = str(row['vintage']).strip()
-        # Estrai solo numeri per l'annata
         vintage_match = re.search(r'\b(19|20)\d{2}\b', vintage)
         if vintage_match:
-            # Salva come int direttamente
             wine_data['vintage'] = int(vintage_match.group())
     
     # Produttore
     if 'producer' in row and pd.notna(row['producer']):
         wine_data['producer'] = str(row['producer']).strip()
     
+    # Uvaggio/Vitigno (grape_variety)
+    if 'grape_variety' in row and pd.notna(row['grape_variety']):
+        wine_data['grape_variety'] = str(row['grape_variety']).strip()
+    
     # Regione
     if 'region' in row and pd.notna(row['region']):
         wine_data['region'] = str(row['region']).strip()
     
-    # Prezzo
-    if 'price' in row and pd.notna(row['price']):
-        try:
-            price_str = str(row['price']).replace(',', '.').replace('€', '').strip()
-            # Estrai solo numeri e punti
-            price_clean = re.sub(r'[^\d.,]', '', price_str)
-            if price_clean:
-                wine_data['price'] = float(price_clean.replace(',', '.'))
-        except (ValueError, TypeError):
-            pass
+    # Paese (country)
+    if 'country' in row and pd.notna(row['country']):
+        wine_data['country'] = str(row['country']).strip()
+    
+    # Tipo vino (wine_type)
+    if 'wine_type' in row and pd.notna(row['wine_type']):
+        wine_type = str(row['wine_type']).lower().strip()
+        wine_data['wine_type'] = classify_wine_type(wine_type)
+    else:
+        # Prova a classificare dal nome
+        if 'name' in wine_data:
+            wine_data['wine_type'] = classify_wine_type(wine_data['name'])
+        else:
+            wine_data['wine_type'] = 'sconosciuto'
+    
+    # Classificazione (DOC, DOCG, IGT, etc.)
+    if 'classification' in row and pd.notna(row['classification']):
+        wine_data['classification'] = str(row['classification']).strip().upper()
     
     # Quantità
     if 'quantity' in row and pd.notna(row['quantity']):
@@ -226,19 +306,74 @@ def extract_wine_data_from_row(row: pd.Series) -> Dict[str, Any]:
             qty_match = re.search(r'\d+', qty_str)
             if qty_match:
                 wine_data['quantity'] = int(qty_match.group())
+            else:
+                wine_data['quantity'] = 1
         except (ValueError, TypeError):
             wine_data['quantity'] = 1
     else:
         wine_data['quantity'] = 1
     
-    # Tipo vino
-    if 'wine_type' in row and pd.notna(row['wine_type']):
-        wine_type = str(row['wine_type']).lower().strip()
-        wine_data['wine_type'] = classify_wine_type(wine_type)
+    # Scorta minima (min_quantity)
+    if 'min_quantity' in row and pd.notna(row['min_quantity']):
+        try:
+            min_qty_str = str(row['min_quantity']).strip()
+            min_qty_match = re.search(r'\d+', min_qty_str)
+            if min_qty_match:
+                wine_data['min_quantity'] = int(min_qty_match.group())
+            else:
+                wine_data['min_quantity'] = 0
+        except (ValueError, TypeError):
+            wine_data['min_quantity'] = 0
     else:
-        # Prova a classificare dal nome
-        if 'name' in wine_data:
-            wine_data['wine_type'] = classify_wine_type(wine_data['name'])
+        wine_data['min_quantity'] = 0
+    
+    # Prezzo di acquisto (cost_price)
+    if 'cost_price' in row and pd.notna(row['cost_price']):
+        try:
+            cost_str = str(row['cost_price']).replace(',', '.').replace('€', '').strip()
+            cost_clean = re.sub(r'[^\d.,]', '', cost_str)
+            if cost_clean:
+                wine_data['cost_price'] = float(cost_clean.replace(',', '.'))
+        except (ValueError, TypeError):
+            pass
+    
+    # Prezzo di vendita (selling_price)
+    # Controlla prima selling_price, poi price (compatibilità)
+    if 'selling_price' in row and pd.notna(row['selling_price']):
+        try:
+            price_str = str(row['selling_price']).replace(',', '.').replace('€', '').strip()
+            price_clean = re.sub(r'[^\d.,]', '', price_str)
+            if price_clean:
+                wine_data['selling_price'] = float(price_clean.replace(',', '.'))
+        except (ValueError, TypeError):
+            pass
+    elif 'price' in row and pd.notna(row['price']):
+        # Fallback: se c'è solo 'price', usa come selling_price
+        try:
+            price_str = str(row['price']).replace(',', '.').replace('€', '').strip()
+            price_clean = re.sub(r'[^\d.,]', '', price_str)
+            if price_clean:
+                wine_data['selling_price'] = float(price_clean.replace(',', '.'))
+        except (ValueError, TypeError):
+            pass
+    
+    # Gradazione alcolica (alcohol_content)
+    if 'alcohol_content' in row and pd.notna(row['alcohol_content']):
+        try:
+            alc_str = str(row['alcohol_content']).replace('%', '').replace('vol', '').strip()
+            alc_clean = re.sub(r'[^\d.,]', '', alc_str)
+            if alc_clean:
+                wine_data['alcohol_content'] = float(alc_clean.replace(',', '.'))
+        except (ValueError, TypeError):
+            pass
+    
+    # Descrizione
+    if 'description' in row and pd.notna(row['description']):
+        wine_data['description'] = str(row['description']).strip()
+    
+    # Note
+    if 'notes' in row and pd.notna(row['notes']):
+        wine_data['notes'] = str(row['notes']).strip()
     
     return wine_data
 
