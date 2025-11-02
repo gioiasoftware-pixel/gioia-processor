@@ -7,7 +7,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime
-from database import get_db, create_tables, save_inventory_to_db, get_inventory_status, ProcessingJob, ensure_user_tables, get_user_table_name
+from database import get_db, create_tables, save_inventory_to_db, get_inventory_status, ProcessingJob, ensure_user_tables, get_user_table_name, User
 from config import validate_config
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
@@ -177,15 +177,23 @@ async def process_inventory_background(
             if isinstance(save_result, dict):
                 inventory_id = save_result.get("user_id")
                 saved_count = save_result.get("saved_count", len(wines_data))
-                error_count = save_result.get("error_count", 0)
-                errors_log = save_result.get("errors", [])
+                warning_count = save_result.get("warning_count", 0)  # Separato: solo warnings
+                error_count = save_result.get("error_count", 0)     # Solo errori critici
+                warnings_log = save_result.get("warnings", [])       # Lista warnings
+                errors_log = save_result.get("errors", [])           # Lista errori
             else:
                 inventory_id = save_result
                 saved_count = len(wines_data)
+                warning_count = 0
                 error_count = 0
+                warnings_log = []
                 errors_log = []
             
             logger.info(f"Job {job_id}: Successfully processed {saved_count}/{len(wines_data)} wines in {processing_time:.2f}s")
+            if warning_count > 0:
+                logger.info(f"Job {job_id}: {warning_count} warnings (annate mancanti, dati opzionali)")
+            if error_count > 0:
+                logger.error(f"Job {job_id}: {error_count} errori critici")
             
             # Prepara risultato
             ai_enabled = "yes" if os.getenv("OPENAI_API_KEY") else "no"
@@ -194,6 +202,8 @@ async def process_inventory_background(
                 "status": "success",
                 "total_wines": len(wines_data),
                 "saved_wines": saved_count,
+                "warning_count": warning_count,  # Separato: solo warnings
+                "error_count": error_count,      # Solo errori critici
                 "business_name": business_name,
                 "telegram_id": telegram_id,
                 "inventory_id": inventory_id,
@@ -204,15 +214,21 @@ async def process_inventory_background(
                 "file_size_bytes": len(file_content)
             }
             
+            # Messaggi condizionali in base a warnings/errori
             if error_count > 0:
-                result_data["warnings_count"] = error_count
-                result_data["warnings"] = errors_log[:10]
-                result_data["message"] = f"Salvati {saved_count} vini su {len(wines_data)}. {error_count} vini salvati con warning/errori (verificare note)."
+                result_data["warnings"] = warnings_log[:10] if warnings_log else []
+                result_data["errors"] = errors_log[:10]
+                result_data["message"] = f"⚠️ Salvati {saved_count} vini su {len(wines_data)}. {error_count} errori critici, {warning_count} warnings."
+            elif warning_count > 0:
+                result_data["warnings"] = warnings_log[:10]
+                result_data["message"] = f"✅ Salvati {saved_count} vini su {len(wines_data)}. {warning_count} warnings (annate mancanti, dati opzionali - verificare note)."
+            else:
+                result_data["message"] = f"✅ Salvati {saved_count} vini su {len(wines_data)} senza errori o warnings."
             
             # Aggiorna job come completato
             job.status = 'completed'
             job.saved_wines = saved_count
-            job.error_count = error_count
+            job.error_count = error_count  # Solo errori critici (warnings non sono errori)
             job.result_data = json.dumps(result_data)
             job.completed_at = datetime.utcnow()
             await db.commit()
@@ -452,6 +468,161 @@ async def get_status(telegram_id: int):
     except Exception as e:
         logger.error(f"Error getting status for telegram_id {telegram_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")
+
+@app.post("/inventory-movement")
+async def process_inventory_movement(
+    telegram_id: int = Form(...),
+    business_name: str = Form(...),
+    wine_name: str = Form(...),
+    movement_type: str = Form(...),  # 'consumo' o 'rifornimento'
+    quantity: int = Form(...),
+    notes: str = Form(None)
+):
+    """
+    Processa movimento inventario (consumo o rifornimento).
+    Aggiorna quantità vino e salva log.
+    """
+    try:
+        from sqlalchemy import text as sql_text
+        
+        if movement_type not in ['consumo', 'rifornimento']:
+            raise HTTPException(status_code=400, detail="movement_type deve essere 'consumo' o 'rifornimento'")
+        
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail="quantity deve essere > 0")
+        
+        async for db in get_db():
+            # Trova utente
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
+            
+            # Ottieni nome tabelle
+            table_inventario = get_user_table_name(telegram_id, business_name, "INVENTARIO")
+            table_consumi = get_user_table_name(telegram_id, business_name, "Consumi e rifornimenti")
+            table_log = get_user_table_name(telegram_id, business_name, "LOG interazione")
+            
+            # Cerca vino nell'inventario (matching intelligente)
+            search_wine = sql_text(f"""
+                SELECT * FROM {table_inventario} 
+                WHERE user_id = :user_id 
+                AND (
+                    LOWER(name) LIKE LOWER(:wine_name_pattern)
+                    OR LOWER(producer) LIKE LOWER(:wine_name_pattern)
+                )
+                LIMIT 1
+            """)
+            
+            wine_name_pattern = f"%{wine_name}%"
+            result = await db.execute(search_wine, {
+                "user_id": user.id,
+                "wine_name_pattern": wine_name_pattern
+            })
+            wine_row = result.fetchone()
+            
+            if not wine_row:
+                return {
+                    "status": "error",
+                    "error": "wine_not_found",
+                    "message": f"Vino '{wine_name}' non trovato nell'inventario",
+                    "telegram_id": telegram_id
+                }
+            
+            # Ottieni quantità corrente
+            quantity_before = wine_row.quantity if wine_row.quantity else 0
+            
+            # Calcola nuova quantità
+            if movement_type == 'consumo':
+                quantity_change = -quantity  # Negativo per consumo
+                if quantity_before < quantity:
+                    return {
+                        "status": "error",
+                        "error": "insufficient_quantity",
+                        "message": f"Quantità insufficiente: disponibili {quantity_before}, richieste {quantity}",
+                        "telegram_id": telegram_id,
+                        "wine_name": wine_row.name,
+                        "available_quantity": quantity_before
+                    }
+            else:  # rifornimento
+                quantity_change = quantity  # Positivo per rifornimento
+            
+            quantity_after = quantity_before + quantity_change
+            
+            # Aggiorna quantità vino
+            update_wine = sql_text(f"""
+                UPDATE {table_inventario}
+                SET quantity = :quantity_after,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :wine_id
+            """)
+            await db.execute(update_wine, {
+                "quantity_after": quantity_after,
+                "wine_id": wine_row.id
+            })
+            
+            # Salva in tabella "Consumi e rifornimenti"
+            insert_movement = sql_text(f"""
+                INSERT INTO {table_consumi}
+                (user_id, wine_name, wine_producer, movement_type, quantity_change, 
+                 quantity_before, quantity_after, notes, movement_date)
+                VALUES
+                (:user_id, :wine_name, :wine_producer, :movement_type, :quantity_change,
+                 :quantity_before, :quantity_after, :notes, CURRENT_TIMESTAMP)
+                RETURNING id
+            """)
+            await db.execute(insert_movement, {
+                "user_id": user.id,
+                "wine_name": wine_row.name,
+                "wine_producer": wine_row.producer,
+                "movement_type": movement_type,
+                "quantity_change": quantity_change,
+                "quantity_before": quantity_before,
+                "quantity_after": quantity_after,
+                "notes": notes or f"{movement_type.capitalize()} di {quantity} bottiglie"
+            })
+            
+            # Salva anche in "LOG interazione"
+            interaction_note = f"{movement_type.capitalize()}: {quantity} bottiglie di {wine_row.name}"
+            if notes:
+                interaction_note += f" - {notes}"
+            
+            insert_log = sql_text(f"""
+                INSERT INTO {table_log}
+                (user_id, interaction_type, interaction_data, notes, created_at)
+                VALUES
+                (:user_id, :interaction_type, :interaction_data, :notes, CURRENT_TIMESTAMP)
+            """)
+            await db.execute(insert_log, {
+                "user_id": user.id,
+                "interaction_type": "movement",
+                "interaction_data": f"{movement_type}: {wine_row.name}, {quantity} bottiglie",
+                "notes": interaction_note
+            })
+            
+            await db.commit()
+            
+            logger.info(f"Movement processed: {telegram_id}/{business_name} - {movement_type} {quantity} {wine_row.name}")
+            
+            return {
+                "status": "success",
+                "movement_type": movement_type,
+                "wine_name": wine_row.name,
+                "wine_producer": wine_row.producer,
+                "quantity": quantity,
+                "quantity_before": quantity_before,
+                "quantity_after": quantity_after,
+                "telegram_id": telegram_id,
+                "business_name": business_name
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing inventory movement: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing movement: {str(e)}")
 
 @app.get("/ai/status")
 async def ai_status():

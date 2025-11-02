@@ -293,8 +293,10 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         
         # Normalizza e aggiungi vini nella tabella INVENTARIO
         saved_count = 0
-        error_count = 0
-        errors_log = []
+        warning_count = 0  # Separato da error_count: solo warnings (annate mancanti, dati opzionali)
+        error_count = 0    # Solo errori critici (vino non salvato)
+        warnings_log = []   # Lista warnings separata
+        errors_log = []     # Lista errori critici
         
         for wine_data in wines_data:
             errors = []
@@ -463,11 +465,19 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                 })
                 wine_id = result.scalar_one()
                 
-                if warnings or errors:
+                # Conta warnings (annate mancanti, dati opzionali - vino salvato comunque)
+                if warnings:
+                    warning_count += 1
+                    warnings_log.append({
+                        "wine": wine_data.get("name", "Sconosciuto"),
+                        "warnings": warnings
+                    })
+                
+                # Conta errori critici (solo se vino non salvato correttamente)
+                if errors:
                     error_count += 1
                     errors_log.append({
                         "wine": wine_data.get("name", "Sconosciuto"),
-                        "warnings": warnings,
                         "errors": errors
                     })
                 
@@ -541,18 +551,23 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         
         await session.commit()
         
+        # Log appropriato in base a warnings/errori
         if error_count > 0:
-            logger.warning(f"Saved {saved_count} wines for user {telegram_id}/{business_name}, {error_count} con warning/errori")
-            logger.warning(f"Errors summary: {errors_log}")
+            logger.error(f"Saved {saved_count} wines for user {telegram_id}/{business_name}, {error_count} errori critici, {warning_count} warnings")
+            logger.error(f"Errors summary: {errors_log}")
+        elif warning_count > 0:
+            logger.warning(f"Saved {saved_count} wines for user {telegram_id}/{business_name}, {warning_count} warnings (annate mancanti, dati opzionali)")
         else:
-            logger.info(f"Saved {saved_count} wines for user {telegram_id}/{business_name} without errors")
+            logger.info(f"Saved {saved_count} wines for user {telegram_id}/{business_name} without errors or warnings")
         
         return {
             "user_id": user.id,
             "saved_count": saved_count,
             "total_count": len(wines_data),
-            "error_count": error_count,
-            "errors": errors_log,
+            "warning_count": warning_count,  # Separato: solo warnings
+            "error_count": error_count,      # Solo errori critici
+            "warnings": warnings_log,       # Lista warnings
+            "errors": errors_log,            # Lista errori critici
             "table_name": table_inventario
         }
         
