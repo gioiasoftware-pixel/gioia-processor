@@ -72,6 +72,10 @@ class ProcessingJob(Base):
     result_data = Column(Text)  # JSON con risultato completo
     error_message = Column(Text)
     
+    # Idempotenza
+    client_msg_id = Column(String(100), nullable=True, index=True)  # ID messaggio client per idempotenza
+    update_id = Column(Integer, nullable=True)  # Telegram update.id
+    
     # Metadati
     created_at = Column(DateTime, default=datetime.utcnow)
     started_at = Column(DateTime)
@@ -81,9 +85,12 @@ class ProcessingJob(Base):
 # Configurazione database
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/gioia_processor")
 
-# Engine asincrono per PostgreSQL
+# Engine asincrono per PostgreSQL con pool prudente
 engine = create_async_engine(
     DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://"),
+    pool_size=int(os.getenv("DB_POOL_SIZE", "10")),  # Pool size configurabile
+    max_overflow=0,  # IMPORTANTE: evita superare max_connections
+    pool_pre_ping=True,  # Auto-reconnect
     echo=False
 )
 

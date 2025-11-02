@@ -24,7 +24,9 @@ if __name__ == "__main__":
     else:
         logger.info("Database URL configured")
     
-    logger.info(f"Starting Gioia Processor on {host}:{port}")
+    workers = int(os.getenv("UVICORN_WORKERS", "4"))  # Default 4 workers
+    
+    logger.info(f"Starting Gioia Processor on {host}:{port} with {workers} workers")
     logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'production')}")
     
     try:
@@ -32,6 +34,7 @@ if __name__ == "__main__":
             "main:app",
             host=host,
             port=port,
+            workers=workers,  # Multi-worker per concorrenza
             reload=False,
             log_level="info",
             access_log=True

@@ -108,7 +108,8 @@ async def process_inventory_background(
     business_name: str,
     file_type: str,
     file_content: bytes,
-    file_name: str
+    file_name: str,
+    correlation_id: str = None
 ):
     """
     Elabora inventario in background (chiamata asincrona)
@@ -126,7 +127,14 @@ async def process_inventory_background(
             job.started_at = datetime.utcnow()
             await db.commit()
             
-            logger.info(f"Job {job_id}: Started processing for telegram_id: {telegram_id}")
+            from structured_logging import log_with_context
+            
+            log_with_context(
+                "info",
+                f"Job {job_id}: Started processing for telegram_id: {telegram_id}",
+                telegram_id=telegram_id,
+                correlation_id=correlation_id
+            )
             
             # Processa file in base al tipo
             wines_data = []
@@ -257,14 +265,24 @@ async def process_inventory(
     telegram_id: int = Form(...),
     business_name: str = Form(...),
     file_type: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    client_msg_id: str = Form(None),  # Opzionale: per idempotenza
+    correlation_id: str = Form(None)  # Opzionale: per logging
 ):
     """
     Crea job di elaborazione inventario e ritorna job_id immediatamente.
     L'elaborazione avviene in background.
+    Supporta idempotenza tramite client_msg_id.
     """
     try:
-        logger.info(f"Creating job for telegram_id: {telegram_id}, business: {business_name}, type: {file_type}")
+        from structured_logging import log_with_context
+        
+        log_with_context(
+            "info",
+            f"Creating job for telegram_id: {telegram_id}, business: {business_name}, type: {file_type}",
+            telegram_id=telegram_id,
+            correlation_id=correlation_id
+        )
         
         # Validazione input
         if not telegram_id or telegram_id <= 0:
@@ -285,6 +303,47 @@ async def process_inventory(
         if len(file_content) > 10 * 1024 * 1024:  # 10MB limit
             raise HTTPException(status_code=413, detail="File too large (max 10MB)")
         
+        # IDEMPOTENZA: Controlla se job esiste già con stesso client_msg_id
+        if client_msg_id:
+            async for db in get_db():
+                existing = await db.execute(
+                    select(ProcessingJob).where(
+                        ProcessingJob.telegram_id == telegram_id,
+                        ProcessingJob.client_msg_id == client_msg_id
+                    )
+                )
+                existing_job = existing.scalar_one_or_none()
+                if existing_job:
+                    # Job già esistente: ritorna risultato precedente
+                    if existing_job.status == 'completed':
+                        log_with_context(
+                            "info",
+                            f"Job already completed (idempotency): {existing_job.job_id}",
+                            telegram_id=telegram_id,
+                            correlation_id=correlation_id
+                        )
+                        return {
+                            "status": "completed",
+                            "job_id": existing_job.job_id,
+                            "message": "Job già elaborato (idempotenza)",
+                            "from_cache": True
+                        }
+                    elif existing_job.status == 'processing':
+                        log_with_context(
+                            "info",
+                            f"Job already processing (idempotency): {existing_job.job_id}",
+                            telegram_id=telegram_id,
+                            correlation_id=correlation_id
+                        )
+                        return {
+                            "status": "processing",
+                            "job_id": existing_job.job_id,
+                            "message": "Job già in elaborazione",
+                            "from_cache": True
+                        }
+                    # Se error, permette retry creando nuovo job
+                break
+        
         # Genera job_id univoco
         job_id = str(uuid.uuid4())
         
@@ -297,13 +356,19 @@ async def process_inventory(
                 status='pending',
                 file_type=file_type.lower(),
                 file_name=file.filename or "inventario",
-                file_size_bytes=len(file_content)
+                file_size_bytes=len(file_content),
+                client_msg_id=client_msg_id  # Nuovo campo per idempotenza
             )
             db.add(job)
             await db.commit()
             break
         
-        logger.info(f"Job {job_id} created, starting background processing")
+        log_with_context(
+            "info",
+            f"Job {job_id} created, starting background processing",
+            telegram_id=telegram_id,
+            correlation_id=correlation_id
+        )
         
         # Avvia elaborazione in background
         asyncio.create_task(
@@ -313,7 +378,8 @@ async def process_inventory(
                 business_name=business_name,
                 file_type=file_type,
                 file_content=file_content,
-                file_name=file.filename or "inventario"
+                file_name=file.filename or "inventario",
+                correlation_id=correlation_id  # Passa correlation_id
             )
         )
         
@@ -493,6 +559,7 @@ async def process_movement_background(
     try:
         async for db in get_db():
             from sqlalchemy import text as sql_text
+            from structured_logging import log_with_context
             
             # Aggiorna job status a processing
             stmt = select(ProcessingJob).where(ProcessingJob.job_id == job_id)
@@ -503,7 +570,11 @@ async def process_movement_background(
             job.started_at = datetime.utcnow()
             await db.commit()
             
-            logger.info(f"Job {job_id}: Started processing movement for telegram_id: {telegram_id}, {movement_type} {quantity} {wine_name}")
+            log_with_context(
+                "info",
+                f"Job {job_id}: Started processing movement for telegram_id: {telegram_id}, {movement_type} {quantity} {wine_name}",
+                telegram_id=telegram_id
+            )
             
             # Trova utente
             stmt = select(User).where(User.telegram_id == telegram_id)
@@ -522,78 +593,87 @@ async def process_movement_background(
             table_inventario = user_tables["inventario"]
             table_consumi = user_tables["consumi"]
             
-            # Cerca vino nell'inventario (matching intelligente)
-            search_wine = sql_text(f"""
-                SELECT * FROM {table_inventario} 
-                WHERE user_id = :user_id 
-                AND (
-                    LOWER(name) LIKE LOWER(:wine_name_pattern)
-                    OR LOWER(producer) LIKE LOWER(:wine_name_pattern)
-                )
-                LIMIT 1
-            """)
+            # ✅ TRANSACTIONE ATOMICA con FOR UPDATE per evitare race condition
+            wine_row = None
+            quantity_before = 0
+            quantity_after = 0
+            prodotto_rifornito = None
+            prodotto_consumato = None
             
-            wine_name_pattern = f"%{wine_name}%"
-            result = await db.execute(search_wine, {
-                "user_id": user.id,
-                "wine_name_pattern": wine_name_pattern
-            })
-            wine_row = result.fetchone()
-            
-            if not wine_row:
+            try:
+                async with db.begin():  # BEGIN transaction
+                    # Cerca vino nell'inventario con FOR UPDATE (lock riga)
+                    search_wine = sql_text(f"""
+                        SELECT * FROM {table_inventario} 
+                        WHERE user_id = :user_id 
+                        AND (
+                            LOWER(name) LIKE LOWER(:wine_name_pattern)
+                            OR LOWER(producer) LIKE LOWER(:wine_name_pattern)
+                        )
+                        FOR UPDATE  -- ✅ LOCK row per serializzare accessi
+                        LIMIT 1
+                    """)
+                    
+                    wine_name_pattern = f"%{wine_name}%"
+                    result = await db.execute(search_wine, {
+                        "user_id": user.id,
+                        "wine_name_pattern": wine_name_pattern
+                    })
+                    wine_row = result.fetchone()
+                    
+                    if not wine_row:
+                        raise ValueError(f"Vino '{wine_name}' non trovato nell'inventario")
+                    
+                    # Ottieni quantità corrente
+                    quantity_before = wine_row.quantity if wine_row.quantity else 0
+                    
+                    # Calcola nuova quantità
+                    if movement_type == 'consumo':
+                        if quantity_before < quantity:
+                            raise ValueError(f"Quantità insufficiente: disponibili {quantity_before}, richieste {quantity}")
+                        quantity_after = quantity_before - quantity
+                        prodotto_rifornito = None
+                        prodotto_consumato = quantity
+                    else:  # rifornimento
+                        quantity_after = quantity_before + quantity
+                        prodotto_rifornito = quantity
+                        prodotto_consumato = None
+                    
+                    # ✅ UPDATE in stessa transazione
+                    update_wine = sql_text(f"""
+                        UPDATE {table_inventario}
+                        SET quantity = :quantity_after,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = :wine_id
+                    """)
+                    await db.execute(update_wine, {
+                        "quantity_after": quantity_after,
+                        "wine_id": wine_row.id
+                    })
+                    
+                    # ✅ INSERT movimento in stessa transazione
+                    insert_movement = sql_text(f"""
+                        INSERT INTO {table_consumi}
+                        (user_id, data, Prodotto, prodotto_rifornito, prodotto_consumato)
+                        VALUES
+                        (:user_id, CURRENT_TIMESTAMP, :prodotto, :prodotto_rifornito, :prodotto_consumato)
+                        RETURNING id
+                    """)
+                    await db.execute(insert_movement, {
+                        "user_id": user.id,
+                        "prodotto": wine_row.name,  # Nome corretto dal database
+                        "prodotto_rifornito": prodotto_rifornito,
+                        "prodotto_consumato": prodotto_consumato
+                    })
+                    
+                    # ✅ COMMIT automatico se tutto OK (context manager)
+            except ValueError as ve:
+                # Errore validazione: aggiorna job e ritorna
                 job.status = 'error'
-                job.error_message = f"Vino '{wine_name}' non trovato nell'inventario"
+                job.error_message = str(ve)
                 job.completed_at = datetime.utcnow()
                 await db.commit()
                 return
-            
-            # Ottieni quantità corrente
-            quantity_before = wine_row.quantity if wine_row.quantity else 0
-            
-            # Calcola nuova quantità
-            if movement_type == 'consumo':
-                if quantity_before < quantity:
-                    job.status = 'error'
-                    job.error_message = f"Quantità insufficiente: disponibili {quantity_before}, richieste {quantity}"
-                    job.completed_at = datetime.utcnow()
-                    await db.commit()
-                    return
-                quantity_after = quantity_before - quantity
-                prodotto_rifornito = None
-                prodotto_consumato = quantity
-            else:  # rifornimento
-                quantity_after = quantity_before + quantity
-                prodotto_rifornito = quantity
-                prodotto_consumato = None
-            
-            # Aggiorna quantità vino
-            update_wine = sql_text(f"""
-                UPDATE {table_inventario}
-                SET quantity = :quantity_after,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = :wine_id
-            """)
-            await db.execute(update_wine, {
-                "quantity_after": quantity_after,
-                "wine_id": wine_row.id
-            })
-            
-            # Salva in tabella "Consumi e rifornimenti" con nuova struttura
-            insert_movement = sql_text(f"""
-                INSERT INTO {table_consumi}
-                (user_id, data, Prodotto, prodotto_rifornito, prodotto_consumato)
-                VALUES
-                (:user_id, CURRENT_TIMESTAMP, :prodotto, :prodotto_rifornito, :prodotto_consumato)
-                RETURNING id
-            """)
-            await db.execute(insert_movement, {
-                "user_id": user.id,
-                "prodotto": wine_row.name,  # Nome corretto dal database
-                "prodotto_rifornito": prodotto_rifornito,
-                "prodotto_consumato": prodotto_consumato
-            })
-            
-            await db.commit()
             
             processing_time = (datetime.utcnow() - start_time).total_seconds()
             
@@ -616,7 +696,11 @@ async def process_movement_background(
             job.completed_at = datetime.utcnow()
             await db.commit()
             
-            logger.info(f"Job {job_id}: Movement processed successfully - {movement_type} {quantity} {wine_row.name}")
+            log_with_context(
+                "info",
+                f"Job {job_id}: Movement processed successfully - {movement_type} {quantity} {wine_row.name}",
+                telegram_id=telegram_id
+            )
             break
             
     except Exception as e:
