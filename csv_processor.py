@@ -40,7 +40,7 @@ def find_column_mapping(col_name: str, column_mappings: Dict[str, List[str]]) ->
     """
     Trova il mapping per una colonna data.
     Cerca prima corrispondenza esatta, poi parziale (contains).
-    Da priorità a match più specifici e più lunghi.
+    Da priorità a match più specifici, più lunghi e più rilevanti.
     
     Returns:
         Nome colonna standardizzato o None se non trovato
@@ -54,30 +54,45 @@ def find_column_mapping(col_name: str, column_mappings: Dict[str, List[str]]) ->
             if normalized_col == normalized_variant:
                 return standard_name
     
-    # Cerca corrispondenza parziale (priorità a match più lunghi e specifici)
+    # Cerca corrispondenza parziale (priorità a match più specifici)
+    # Ordine priorità:
+    # 1. Match che contiene variante esatta completa (es. "regione/denominazione" contiene "regione")
+    # 2. Match più lunghi (variante più lunga = più specifica)
+    # 3. Match che inizia con la variante (più rilevante)
+    
     best_match = None
     best_match_length = 0
-    best_match_type = 0  # 0=none, 1=generic (col in variant), 2=specific (variant in col)
+    best_match_score = 0  # Score: 0=none, 1=generic, 2=specific, 3=specific+starts_with
     
     for standard_name, variants in column_mappings.items():
         for variant in variants:
             normalized_variant = normalize_column_name(variant)
-            # Match specifico: la variante è contenuta nel nome colonna (es. "regione" in "regione/denominazione")
+            score = 0
+            variant_len = len(normalized_variant)
+            
+            # Match specifico: la variante è contenuta nel nome colonna
             if normalized_variant in normalized_col:
-                variant_len = len(normalized_variant)
-                # Priorità a match più lunghi e specifici
-                if variant_len > best_match_length or (variant_len == best_match_length and best_match_type < 2):
+                score = 2  # Match specifico base
+                
+                # Bonus: se la variante è all'inizio del nome colonna (più rilevante)
+                if normalized_col.startswith(normalized_variant):
+                    score = 3  # Match specifico + inizio
+                
+                # Se questo match è migliore del precedente
+                if score > best_match_score or (score == best_match_score and variant_len > best_match_length):
                     best_match = standard_name
                     best_match_length = variant_len
-                    best_match_type = 2
+                    best_match_score = score
             # Match generico: il nome colonna è contenuto nella variante (priorità minore)
             elif normalized_col in normalized_variant:
                 col_len = len(normalized_col)
+                score = 1  # Match generico
+                
                 # Accetta solo se non c'è già un match specifico migliore
-                if best_match_type < 2 or (best_match_type == 1 and col_len > best_match_length):
+                if best_match_score < 2 or (best_match_score == 1 and col_len > best_match_length):
                     best_match = standard_name
                     best_match_length = col_len
-                    best_match_type = 1
+                    best_match_score = score
     
     return best_match
 
