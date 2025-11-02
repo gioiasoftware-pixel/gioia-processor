@@ -172,7 +172,8 @@ Rispondi con una sola parola.
     
     async def improve_wine_data(self, wine_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Migliora dati vino usando AI per correggere errori e completare informazioni
+        Migliora dati vino usando AI per correggere errori e completare informazioni.
+        Usa GPT-4 per massima qualità (usato solo per OCR dove i dati possono essere più sporchi).
         """
         try:
             prompt = f"""
@@ -212,7 +213,7 @@ Rispondi SOLO con JSON migliorato:
             )
             
             improved_data = json.loads(response.choices[0].message.content)
-            logger.info(f"AI improved wine data for: {improved_data.get('name', 'Unknown')}")
+            logger.info(f"AI improved wine data (GPT-4) for: {improved_data.get('name', 'Unknown')}")
             return improved_data
             
         except Exception as e:

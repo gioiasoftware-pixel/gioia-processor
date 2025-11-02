@@ -75,9 +75,8 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
             try:
                 wine_data = extract_wine_data_from_row(row)
                 if wine_data and wine_data.get('name'):
-                    # Usa AI per migliorare dati vino
-                    improved_wine = await ai_processor.improve_wine_data(wine_data)
-                    wines_data.append(improved_wine)
+                    # Usa direttamente i dati estratti (miglioramento AI rimosso per ridurre costi)
+                    wines_data.append(wine_data)
             except Exception as e:
                 logger.warning(f"Error processing row {index}: {e}")
                 continue
@@ -163,9 +162,8 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
             try:
                 wine_data = extract_wine_data_from_row(row)
                 if wine_data and wine_data.get('name'):
-                    # Usa AI per migliorare dati vino
-                    improved_wine = await ai_processor.improve_wine_data(wine_data)
-                    wines_data.append(improved_wine)
+                    # Usa direttamente i dati estratti (miglioramento AI rimosso per ridurre costi)
+                    wines_data.append(wine_data)
             except Exception as e:
                 logger.warning(f"Error processing row {index}: {e}")
                 continue
