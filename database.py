@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, event
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, DateTime, ForeignKey, Text, Boolean, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -18,7 +18,7 @@ class User(Base):
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False, index=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
     username = Column(String(100))
     first_name = Column(String(100))
     last_name = Column(String(100))
@@ -53,7 +53,7 @@ class ProcessingJob(Base):
     job_id = Column(String(50), unique=True, nullable=False, index=True)  # UUID o ID univoco
     
     # Dati utente
-    telegram_id = Column(Integer, nullable=False, index=True)
+    telegram_id = Column(BigInteger, nullable=False, index=True)
     business_name = Column(String(200))
     
     # Stato elaborazione
@@ -333,7 +333,7 @@ async def create_tables():
                 await session.execute(sql_text("""
                     CREATE TABLE IF NOT EXISTS rate_limits (
                         id SERIAL PRIMARY KEY,
-                        telegram_id INTEGER NOT NULL,
+                        telegram_id BIGINT NOT NULL,
                         action VARCHAR(50) NOT NULL,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
@@ -356,6 +356,22 @@ async def create_tables():
                           SELECT id, telegram_id, action, timestamp AS created_at
                           FROM rate_limits;
                       END IF;
+                    END$$;
+                """))
+
+                # Migrazione tipi telegram_id a BIGINT dove necessario
+                await session.execute(sql_text("""
+                    DO $$
+                    BEGIN
+                        BEGIN
+                            ALTER TABLE users ALTER COLUMN telegram_id TYPE BIGINT USING telegram_id::bigint;
+                        EXCEPTION WHEN others THEN NULL; END;
+                        BEGIN
+                            ALTER TABLE processing_jobs ALTER COLUMN telegram_id TYPE BIGINT USING telegram_id::bigint;
+                        EXCEPTION WHEN others THEN NULL; END;
+                        BEGIN
+                            ALTER TABLE rate_limits ALTER COLUMN telegram_id TYPE BIGINT USING telegram_id::bigint;
+                        EXCEPTION WHEN others THEN NULL; END;
                     END$$;
                 """))
 
