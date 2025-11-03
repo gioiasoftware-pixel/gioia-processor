@@ -1,11 +1,13 @@
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Float, DateTime, ForeignKey, Text, Boolean, event
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+
 from sqlalchemy import text as sql_text
 from datetime import datetime
 import os
 import logging
+
 import re
 
 logger = logging.getLogger(__name__)
@@ -13,18 +15,20 @@ logger = logging.getLogger(__name__)
 # Base per i modelli
 Base = declarative_base()
 
+
 class User(Base):
     """Modello per gli utenti del bot"""
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    telegram_id = Column(Integer, unique=True, nullable=False, index=True)
     username = Column(String(100))
     first_name = Column(String(100))
     last_name = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+
     # Dati onboarding
     business_name = Column(String(200))
     business_type = Column(String(100))  # enoteca, ristorante, bar, etc.
@@ -53,7 +57,7 @@ class ProcessingJob(Base):
     job_id = Column(String(50), unique=True, nullable=False, index=True)  # UUID o ID univoco
     
     # Dati utente
-    telegram_id = Column(BigInteger, nullable=False, index=True)
+    telegram_id = Column(Integer, nullable=False, index=True)
     business_name = Column(String(200))
     
     # Stato elaborazione
@@ -72,12 +76,9 @@ class ProcessingJob(Base):
     result_data = Column(Text)  # JSON con risultato completo
     error_message = Column(Text)
     
-    # Idempotenza
-    client_msg_id = Column(String(100), nullable=True, index=True)  # ID messaggio client per idempotenza
-    update_id = Column(Integer, nullable=True)  # Telegram update.id
-    
     # Metadati
     created_at = Column(DateTime, default=datetime.utcnow)
+    
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     processing_method = Column(String(50))  # csv_ai_enhanced, excel_ai_enhanced, ocr_ai_enhanced
@@ -85,12 +86,9 @@ class ProcessingJob(Base):
 # Configurazione database
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/gioia_processor")
 
-# Engine asincrono per PostgreSQL con pool prudente
+# Engine asincrono per PostgreSQL
 engine = create_async_engine(
     DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://"),
-    pool_size=int(os.getenv("DB_POOL_SIZE", "10")),  # Pool size configurabile
-    max_overflow=0,  # IMPORTANTE: evita superare max_connections
-    pool_pre_ping=True,  # Auto-reconnect
     echo=False
 )
 
@@ -109,59 +107,6 @@ async def get_db():
         finally:
             await session.close()
 
-async def migrate_consumi_table_if_needed(session, table_name: str):
-    """
-    Migra tabella 'Consumi e rifornimenti' dalla vecchia alla nuova struttura se necessario.
-    
-    Vecchia struttura: wine_name, wine_producer, movement_type, quantity_change, 
-                       quantity_before, quantity_after, notes, movement_date
-    Nuova struttura: data, Prodotto, prodotto_rifornito, prodotto_consumato
-    """
-    try:
-        from sqlalchemy import text as sql_text
-        
-        # Verifica se ha colonna vecchia (movement_type) o nuova (prodotto_rifornito)
-        check_columns = sql_text("""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_schema = 'public' 
-            AND table_name = :table_name
-            AND column_name IN ('movement_type', 'prodotto_rifornito')
-        """)
-        result = await session.execute(check_columns, {"table_name": table_name.replace('"', '')})
-        columns_found = [row[0] for row in result.fetchall()]
-        
-        # Se ha movement_type ma non prodotto_rifornito, è vecchia struttura - migra
-        if 'movement_type' in columns_found and 'prodotto_rifornito' not in columns_found:
-            logger.info(f"Migrating table {table_name} from old to new structure")
-            
-            # Backup dati vecchi se esistono (opzionale - solo per sicurezza)
-            # Qui possiamo decidere se perdere i dati vecchi o convertirli
-            # Per ora: cancella e ricrea (i dati vecchi non sono compatibili con nuova struttura)
-            
-            # Cancella tabella vecchia e ricrea con nuova struttura
-            drop_table = sql_text(f'DROP TABLE IF EXISTS {table_name} CASCADE')
-            await session.execute(drop_table)
-            
-            # Ricrea con nuova struttura
-            create_consumi = sql_text(f"""
-                CREATE TABLE {table_name} (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-                    data TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-                    Prodotto VARCHAR(200) NOT NULL,
-                    prodotto_rifornito INTEGER DEFAULT NULL,
-                    prodotto_consumato INTEGER DEFAULT NULL
-                )
-            """)
-            await session.execute(create_consumi)
-            await session.commit()
-            
-            logger.info(f"Table {table_name} migrated successfully")
-        
-    except Exception as e:
-        logger.error(f"Error migrating table {table_name}: {e}")
-        # Non bloccare l'esecuzione se la migrazione fallisce
 
 def get_user_table_name(telegram_id: int, business_name: str, table_type: str) -> str:
     """
@@ -222,6 +167,7 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
                     user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
                     name VARCHAR(200) NOT NULL,
                     producer VARCHAR(200),
+                    supplier VARCHAR(200),
                     vintage INTEGER,
                     grape_variety VARCHAR(200),
                     region VARCHAR(200),
@@ -268,15 +214,18 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
             await session.execute(create_log)
             
             # Crea tabella Consumi e rifornimenti
-            # Struttura nuova: data, Prodotto, prodotto_rifornito, prodotto_consumato
             create_consumi = sql_text(f"""
                 CREATE TABLE IF NOT EXISTS {table_consumi} (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-                    data TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-                    Prodotto VARCHAR(200) NOT NULL,
-                    prodotto_rifornito INTEGER DEFAULT NULL,
-                    prodotto_consumato INTEGER DEFAULT NULL
+                    wine_name VARCHAR(200) NOT NULL,
+                    wine_producer VARCHAR(200),
+                    movement_type VARCHAR(20) NOT NULL,
+                    quantity_change INTEGER NOT NULL,
+                    quantity_before INTEGER NOT NULL,
+                    quantity_after INTEGER NOT NULL,
+                    notes TEXT,
+                    movement_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             await session.execute(create_consumi)
@@ -284,9 +233,29 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
             await session.commit()
             logger.info(f"Created tables for {telegram_id}/{business_name}: INVENTARIO, INVENTARIO backup, LOG interazione, Consumi e rifornimenti")
         else:
-            # Tabella esiste già - verifica se ha struttura vecchia e migra
-            await migrate_consumi_table_if_needed(session, table_consumi)
-            logger.info(f"Tables already exist for {telegram_id}/{business_name}, migration checked if needed")
+            # Tabella esiste già - verifica se ha colonna supplier e aggiungila se manca
+            try:
+                check_supplier = sql_text(f"""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_schema = 'public' 
+                    AND table_name = :table_name
+                    AND column_name = 'supplier'
+                """)
+                result_supplier = await session.execute(check_supplier, {"table_name": table_name_check})
+                supplier_exists = result_supplier.scalar_one_or_none()
+                
+                if not supplier_exists:
+                    # Aggiungi colonna supplier alle tabelle esistenti
+                    alter_table = sql_text(f"ALTER TABLE {table_inventario} ADD COLUMN IF NOT EXISTS supplier VARCHAR(200)")
+                    await session.execute(alter_table)
+                    await session.commit()
+                    logger.info(f"Added supplier column to existing table {table_inventario}")
+            except Exception as e:
+                logger.warning(f"Error checking/adding supplier column for {table_inventario}: {e}")
+                await session.rollback()
+            
+            logger.info(f"Tables already exist for {telegram_id}/{business_name}")
         
         return {
             "inventario": table_inventario,
@@ -300,102 +269,35 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
         raise
 
 async def create_tables():
+
     """
     Crea solo tabelle condivise nello schema public: User e ProcessingJob.
     Wine, InventoryBackup, InventoryLog vengono creati dinamicamente negli schemi utente.
     """
     try:
+
         # Crea solo User e ProcessingJob nello schema public
         # I modelli Wine, InventoryBackup, InventoryLog sono stati rimossi dalla Base
         # quindi non verranno creati qui
         async with engine.begin() as conn:
+
             # Crea solo le tabelle dei modelli Base esistenti (User e ProcessingJob)
             await conn.run_sync(Base.metadata.create_all)
 
-        # Allinea schema di sistema (idempotente): colonne e indici mancanti, tabelle service
-        async with AsyncSessionLocal() as session:
-            try:
-                # Idempotenza su processing_jobs
-                await session.execute(sql_text("""
-                    ALTER TABLE processing_jobs
-                      ADD COLUMN IF NOT EXISTS client_msg_id VARCHAR(100),
-                      ADD COLUMN IF NOT EXISTS update_id INTEGER;
-                """))
-
-                # Indice unico parziale per idempotenza
-                await session.execute(sql_text("""
-                    CREATE UNIQUE INDEX IF NOT EXISTS uq_processing_jobs_telegram_client_msg
-                      ON processing_jobs (telegram_id, client_msg_id)
-                      WHERE client_msg_id IS NOT NULL;
-                """))
-
-                # Tabella rate limiting coerente col codice attuale
-                await session.execute(sql_text("""
-                    CREATE TABLE IF NOT EXISTS rate_limits (
-                        id SERIAL PRIMARY KEY,
-                        telegram_id BIGINT NOT NULL,
-                        action VARCHAR(50) NOT NULL,
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                """))
-
-                await session.execute(sql_text("""
-                    CREATE INDEX IF NOT EXISTS idx_rate_limits_telegram_action_timestamp
-                        ON rate_limits (telegram_id, action, timestamp DESC);
-                """))
-
-                # Compatibilità temporanea: alcune versioni potrebbero interrogare rate_limit_logs
-                await session.execute(sql_text("""
-                    DO $$
-                    BEGIN
-                      IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.views
-                        WHERE table_schema = 'public' AND table_name = 'rate_limit_logs'
-                      ) THEN
-                        CREATE VIEW rate_limit_logs AS
-                          SELECT id, telegram_id, action, timestamp AS created_at
-                          FROM rate_limits;
-                      END IF;
-                    END$$;
-                """))
-
-                # Migrazione tipi telegram_id a BIGINT dove necessario
-                await session.execute(sql_text("""
-                    DO $$
-                    BEGIN
-                        BEGIN
-                            ALTER TABLE users ALTER COLUMN telegram_id TYPE BIGINT USING telegram_id::bigint;
-                        EXCEPTION WHEN others THEN NULL; END;
-                        BEGIN
-                            ALTER TABLE processing_jobs ALTER COLUMN telegram_id TYPE BIGINT USING telegram_id::bigint;
-                        EXCEPTION WHEN others THEN NULL; END;
-                        BEGIN
-                            ALTER TABLE rate_limits ALTER COLUMN telegram_id TYPE BIGINT USING telegram_id::bigint;
-                        EXCEPTION WHEN others THEN NULL; END;
-                    END$$;
-                """))
-
-                await session.commit()
-                logger.info("Database tables created successfully (public schema): users, processing_jobs")
-                logger.info("System schema aligned: processing_jobs idempotency columns, rate_limits table, compatibility view")
-                logger.info("Note: Tabelle inventario vengono create per-utente nello schema public via ensure_user_tables()")
-            except Exception as align_error:
-                await session.rollback()
-                logger.error(f"Error aligning system schema: {align_error}")
-                # Non bloccare startup: al limite fallirà l'endpoint con errore chiaro
+        
+        logger.info("Database tables created successfully (public schema): users, processing_jobs")
+        logger.info("Note: Tabelle inventario vengono create per-utente nello schema public via ensure_user_tables()")
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")
         raise
 
-async def save_inventory_to_db(session, telegram_id: int, business_name: str, wines_data: list, mode: str = "add", batch_size: int = 100):
+async def save_inventory_to_db(session, telegram_id: int, business_name: str, wines_data: list):
     """
+
     Salva inventario e vini nel database nello schema utente specifico.
-    
-    Args:
-        mode: "add" (aggiunge vini esistenti) o "replace" (sostituisce tutto l'inventario)
-        batch_size: Numero di vini da inserire in batch per performance (default 100)
     """
     try:
+
         from sqlalchemy import select, Table, MetaData, insert
         from sqlalchemy import text as sql_text
         
@@ -409,6 +311,7 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
             user = User(
             telegram_id=telegram_id,
             business_name=business_name,
+
                 onboarding_completed=True
             )
             session.add(user)
@@ -424,16 +327,7 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         table_inventario = user_tables["inventario"]
         table_backup = user_tables["backup"]
         
-        # Se mode="replace", cancella inventario esistente
-        if mode == "replace":
-            logger.info(f"Mode 'replace': deleting existing inventory for user {telegram_id}")
-            delete_existing = sql_text(f"DELETE FROM {table_inventario} WHERE user_id = :user_id")
-            await session.execute(delete_existing, {"user_id": user.id})
-            await session.commit()
-            logger.info(f"Existing inventory deleted for user {telegram_id}")
-        
-        # Normalizza e prepara vini per batch insert
-        normalized_wines = []  # Lista vini normalizzati pronti per inserimento
+        # Normalizza e aggiungi vini nella tabella INVENTARIO
         saved_count = 0
         warning_count = 0  # Separato da error_count: solo warnings (annate mancanti, dati opzionali)
         error_count = 0    # Solo errori critici (vino non salvato)
@@ -441,6 +335,7 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         errors_log = []     # Lista errori critici
         
         for wine_data in wines_data:
+
             errors = []
             warnings = []
             
@@ -572,11 +467,24 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                 
                 combined_notes = "\n".join(notes_parts) if notes_parts else None
                 
-                # Accumula vino normalizzato per batch insert
-                normalized_wine = {
+                # Salva vino nella tabella INVENTARIO usando SQL diretto
+                insert_wine = sql_text(f"""
+                    INSERT INTO {table_inventario} 
+                    (user_id, name, producer, supplier, vintage, grape_variety, region, country, 
+                     wine_type, classification, quantity, min_quantity, cost_price, selling_price, 
+                     alcohol_content, description, notes, created_at, updated_at)
+                    VALUES 
+                    (:user_id, :name, :producer, :supplier, :vintage, :grape_variety, :region, :country,
+                     :wine_type, :classification, :quantity, :min_quantity, :cost_price, :selling_price,
+                     :alcohol_content, :description, :notes, :created_at, :updated_at)
+                    RETURNING id
+                """)
+                
+                result = await session.execute(insert_wine, {
                     "user_id": user.id,
                     "name": wine_data.get("name", "Vino senza nome"),
                     "producer": wine_data.get("producer"),
+                    "supplier": wine_data.get("supplier"),
                     "vintage": vintage,
                     "grape_variety": wine_data.get("grape_variety"),
                     "region": wine_data.get("region"),
@@ -592,10 +500,10 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                     "notes": combined_notes,
                     "created_at": datetime.utcnow(),
                     "updated_at": datetime.utcnow()
-                }
-                normalized_wines.append(normalized_wine)
+                })
+                wine_id = result.scalar_one()
                 
-                # Conta warnings e errori (per report)
+                # Conta warnings (annate mancanti, dati opzionali - vino salvato comunque)
                 if warnings:
                     warning_count += 1
                     warnings_log.append({
@@ -603,12 +511,15 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                         "warnings": warnings
                     })
                 
+                # Conta errori critici (solo se vino non salvato correttamente)
                 if errors:
                     error_count += 1
                     errors_log.append({
                         "wine": wine_data.get("name", "Sconosciuto"),
                         "errors": errors
                     })
+                
+                saved_count += 1
                 
             except Exception as e:
                 # Errore critico - salva comunque il vino con note di errore
@@ -652,35 +563,6 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                     logger.error(f"Impossibile salvare vino {wine_data.get('name', 'Unknown')} anche con dati parziali: {save_error}")
                     continue
         
-        # BATCH INSERT per performance (inserisce vini in batch)
-        if normalized_wines:
-            logger.info(f"Inserting {len(normalized_wines)} wines in batches of {batch_size}")
-            
-            # Inserisci in batch usando executemany (loop efficiente)
-            insert_wine_stmt = sql_text(f"""
-                INSERT INTO {table_inventario} 
-                (user_id, name, producer, vintage, grape_variety, region, country, 
-                 wine_type, classification, quantity, min_quantity, cost_price, selling_price, 
-                 alcohol_content, description, notes, created_at, updated_at)
-                VALUES 
-                (:user_id, :name, :producer, :vintage, :grape_variety, :region, :country, 
-                 :wine_type, :classification, :quantity, :min_quantity, :cost_price, :selling_price, 
-                 :alcohol_content, :description, :notes, :created_at, :updated_at)
-            """)
-            
-            # Inserisci in batch (SQLAlchemy async esegue executemany implicitamente)
-            for i in range(0, len(normalized_wines), batch_size):
-                batch = normalized_wines[i:i + batch_size]
-                # Esegui ogni elemento del batch (SQLAlchemy ottimizza internamente)
-                for wine_params in batch:
-                    await session.execute(insert_wine_stmt, wine_params)
-                saved_count += len(batch)
-                logger.debug(f"Inserted batch {i//batch_size + 1}: {len(batch)} wines")
-                # Commit ogni batch per evitare transazioni troppo lunghe
-                await session.commit()
-            
-            logger.info(f"Batch insert completed: {saved_count} wines saved")
-        
         # Crea backup automatico dopo il salvataggio
         import json
         backup_data = json.dumps([{
@@ -706,6 +588,7 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         })
         
         await session.commit()
+
         
         # Log appropriato in base a warnings/errori
         if error_count > 0:
@@ -733,13 +616,16 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         raise
 
 async def get_user_inventories(session, telegram_id: int):
+
     """Ottieni inventari di un utente dalla tabella INVENTARIO"""
     try:
         from sqlalchemy import select
         
+        
         # Trova utente
         stmt = select(User).where(User.telegram_id == telegram_id)
         result = await session.execute(stmt)
+
         user = result.scalar_one_or_none()
         
         if not user or not user.business_name:
@@ -760,6 +646,7 @@ async def get_user_inventories(session, telegram_id: int):
                 "user_id": row.user_id,
                 "name": row.name,
                 "producer": row.producer,
+                "supplier": getattr(row, 'supplier', None),  # Usa getattr per retrocompatibilità
                 "vintage": row.vintage,
                 "grape_variety": row.grape_variety,
                 "region": row.region,
@@ -780,10 +667,12 @@ async def get_user_inventories(session, telegram_id: int):
         return wines
     except Exception as e:
         logger.error(f"Error getting user inventories: {e}")
+
         # Se tabella non esiste, ritorna lista vuota
         return []
 
 async def get_inventory_status(session, telegram_id: int):
+
     """Ottieni stato elaborazione per utente dalla tabella INVENTARIO"""
     try:
         from sqlalchemy import select
@@ -818,6 +707,7 @@ async def get_inventory_status(session, telegram_id: int):
         
         return {
             "telegram_id": telegram_id,
+
             "total_wines": wines_count,
             "onboarding_completed": user.onboarding_completed,
             "business_name": user.business_name,
@@ -827,4 +717,5 @@ async def get_inventory_status(session, telegram_id: int):
     except Exception as e:
         logger.error(f"Error getting inventory status: {e}")
         raise
+
 

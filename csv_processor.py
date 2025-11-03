@@ -14,6 +14,7 @@ COLUMN_MAPPINGS = {
     'name': ['nome', 'vino', 'wine', 'wine name', 'nome vino', 'denominazione', 'etichetta', 'prodotto', 'articolo', 'descrizione', 'titolo'],
     'vintage': ['annata', 'year', 'vintage', 'anno', 'anno produzione', 'vintage year', 'anno vendemmia', 'vendemmia'],
     'producer': ['produttore', 'producer', 'winery', 'azienda', 'casa vinicola', 'marca', 'brand', 'cantina', 'fattoria', 'azienda vinicola', 'casa produttrice'],
+    'supplier': ['fornitore', 'supplier', 'fornitore principale', 'fornitura', 'acquisto da', 'distributore', 'vendor'],
     'grape_variety': ['uvaggio', 'vitigno', 'grape variety', 'varietà', 'grape_variety', 'grape', 'grapes', 'vitigni', 'varietà uva', 'uvaggio principale'],
     'region': ['regione', 'region', 'zona', 'area', 'area geografica', 'zona geografica', 'denominazione', 'regione/denominazione', 'territorio', 'zona di produzione'],
     'country': ['paese', 'country', 'nazione', 'nation', 'paese di origine', 'origine', 'provenienza'],
@@ -535,6 +536,10 @@ def extract_wine_data_from_row(row: pd.Series) -> Dict[str, Any]:
     # Produttore
     if 'producer' in row and pd.notna(row['producer']):
         wine_data['producer'] = str(row['producer']).strip()
+    
+    # Fornitore (supplier)
+    if 'supplier' in row and pd.notna(row['supplier']):
+        wine_data['supplier'] = str(row['supplier']).strip()
     
     # Uvaggio/Vitigno (grape_variety)
     if 'grape_variety' in row and pd.notna(row['grape_variety']):

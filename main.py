@@ -846,11 +846,12 @@ async def update_wine_field(
 ):
     """
     Aggiorna un singolo campo per un vino dell'inventario utente.
-    Campi supportati: producer, vintage, grape_variety, classification, selling_price, cost_price, alcohol_content, description, notes
+    Campi supportati: producer, supplier, vintage, grape_variety, classification, selling_price, cost_price, alcohol_content, description, notes
     """
     try:
         allowed_fields = {
             'producer': 'producer',
+            'supplier': 'supplier',
             'vintage': 'vintage',
             'grape_variety': 'grape_variety',
             'classification': 'classification',
