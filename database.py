@@ -371,9 +371,13 @@ async def create_tables():
         logger.error(f"Error creating database tables: {e}")
         raise
 
-async def save_inventory_to_db(session, telegram_id: int, business_name: str, wines_data: list):
+async def save_inventory_to_db(session, telegram_id: int, business_name: str, wines_data: list, mode: str = "add", batch_size: int = 100):
     """
     Salva inventario e vini nel database nello schema utente specifico.
+    
+    Args:
+        mode: "add" (aggiunge vini esistenti) o "replace" (sostituisce tutto l'inventario)
+        batch_size: Numero di vini da inserire in batch per performance (default 100)
     """
     try:
         from sqlalchemy import select, Table, MetaData, insert
@@ -404,7 +408,16 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         table_inventario = user_tables["inventario"]
         table_backup = user_tables["backup"]
         
-        # Normalizza e aggiungi vini nella tabella INVENTARIO
+        # Se mode="replace", cancella inventario esistente
+        if mode == "replace":
+            logger.info(f"Mode 'replace': deleting existing inventory for user {telegram_id}")
+            delete_existing = sql_text(f"DELETE FROM {table_inventario} WHERE user_id = :user_id")
+            await session.execute(delete_existing, {"user_id": user.id})
+            await session.commit()
+            logger.info(f"Existing inventory deleted for user {telegram_id}")
+        
+        # Normalizza e prepara vini per batch insert
+        normalized_wines = []  # Lista vini normalizzati pronti per inserimento
         saved_count = 0
         warning_count = 0  # Separato da error_count: solo warnings (annate mancanti, dati opzionali)
         error_count = 0    # Solo errori critici (vino non salvato)
@@ -543,20 +556,8 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                 
                 combined_notes = "\n".join(notes_parts) if notes_parts else None
                 
-                # Salva vino nella tabella INVENTARIO usando SQL diretto
-                insert_wine = sql_text(f"""
-                    INSERT INTO {table_inventario} 
-                    (user_id, name, producer, vintage, grape_variety, region, country, 
-                     wine_type, classification, quantity, min_quantity, cost_price, selling_price, 
-                     alcohol_content, description, notes, created_at, updated_at)
-                    VALUES 
-                    (:user_id, :name, :producer, :vintage, :grape_variety, :region, :country,
-                     :wine_type, :classification, :quantity, :min_quantity, :cost_price, :selling_price,
-                     :alcohol_content, :description, :notes, :created_at, :updated_at)
-                    RETURNING id
-                """)
-                
-                result = await session.execute(insert_wine, {
+                # Accumula vino normalizzato per batch insert
+                normalized_wine = {
                     "user_id": user.id,
                     "name": wine_data.get("name", "Vino senza nome"),
                     "producer": wine_data.get("producer"),
@@ -575,10 +576,10 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                     "notes": combined_notes,
                     "created_at": datetime.utcnow(),
                     "updated_at": datetime.utcnow()
-                })
-                wine_id = result.scalar_one()
+                }
+                normalized_wines.append(normalized_wine)
                 
-                # Conta warnings (annate mancanti, dati opzionali - vino salvato comunque)
+                # Conta warnings e errori (per report)
                 if warnings:
                     warning_count += 1
                     warnings_log.append({
@@ -586,15 +587,12 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                         "warnings": warnings
                     })
                 
-                # Conta errori critici (solo se vino non salvato correttamente)
                 if errors:
                     error_count += 1
                     errors_log.append({
                         "wine": wine_data.get("name", "Sconosciuto"),
                         "errors": errors
                     })
-                
-                saved_count += 1
                 
             except Exception as e:
                 # Errore critico - salva comunque il vino con note di errore
@@ -637,6 +635,35 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
                 except Exception as save_error:
                     logger.error(f"Impossibile salvare vino {wine_data.get('name', 'Unknown')} anche con dati parziali: {save_error}")
                     continue
+        
+        # BATCH INSERT per performance (inserisce vini in batch)
+        if normalized_wines:
+            logger.info(f"Inserting {len(normalized_wines)} wines in batches of {batch_size}")
+            
+            # Inserisci in batch usando executemany (loop efficiente)
+            insert_wine_stmt = sql_text(f"""
+                INSERT INTO {table_inventario} 
+                (user_id, name, producer, vintage, grape_variety, region, country, 
+                 wine_type, classification, quantity, min_quantity, cost_price, selling_price, 
+                 alcohol_content, description, notes, created_at, updated_at)
+                VALUES 
+                (:user_id, :name, :producer, :vintage, :grape_variety, :region, :country, 
+                 :wine_type, :classification, :quantity, :min_quantity, :cost_price, :selling_price, 
+                 :alcohol_content, :description, :notes, :created_at, :updated_at)
+            """)
+            
+            # Inserisci in batch (SQLAlchemy async esegue executemany implicitamente)
+            for i in range(0, len(normalized_wines), batch_size):
+                batch = normalized_wines[i:i + batch_size]
+                # Esegui ogni elemento del batch (SQLAlchemy ottimizza internamente)
+                for wine_params in batch:
+                    await session.execute(insert_wine_stmt, wine_params)
+                saved_count += len(batch)
+                logger.debug(f"Inserted batch {i//batch_size + 1}: {len(batch)} wines")
+                # Commit ogni batch per evitare transazioni troppo lunghe
+                await session.commit()
+            
+            logger.info(f"Batch insert completed: {saved_count} wines saved")
         
         # Crea backup automatico dopo il salvataggio
         import json

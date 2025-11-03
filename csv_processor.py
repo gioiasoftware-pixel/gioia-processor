@@ -2,29 +2,175 @@ import pandas as pd
 import io
 import re
 import logging
-from typing import List, Dict, Any, Optional
+import chardet
+import hashlib
+from typing import List, Dict, Any, Optional, Tuple
 from ai_processor import ai_processor
 
 logger = logging.getLogger(__name__)
 
-# Dizionario completo di mapping colonne - mantiene scalabilità garantendo che tutti i database abbiano le stesse colonne
+# Dizionario completo di mapping colonne - espanso con più sinonimi
 COLUMN_MAPPINGS = {
-    'name': ['nome', 'vino', 'wine', 'wine name', 'nome vino'],
-    'vintage': ['annata', 'year', 'vintage', 'anno', 'anno produzione', 'vintage year'],
-    'producer': ['produttore', 'producer', 'winery', 'azienda', 'casa vinicola', 'marca', 'brand'],
-    'grape_variety': ['uvaggio', 'vitigno', 'grape variety', 'varietà', 'grape_variety', 'grape', 'grapes', 'vitigni', 'varietà uva'],
-    'region': ['regione', 'region', 'zona', 'area', 'area geografica', 'zona geografica', 'denominazione', 'regione/denominazione'],
-    'country': ['paese', 'country', 'nazione', 'nation', 'paese di origine'],
-    'wine_type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino'],
-    'classification': ['classificazione', 'classification', 'doc', 'docg', 'igt', 'dop', 'igp'],
-    'quantity': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta', 'qta_magazzino', 'qta magazzino'],
-    'min_quantity': ['scorta minima', 'min quantity', 'quantità minima', 'min qty', 'scorta min'],
-    'cost_price': ['costo', 'cost', 'prezzo acquisto', 'prezzo di acquisto', 'prezzo acquisto', 'costo unitario', 'costo per bottiglia'],
-    'selling_price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta'],
-    'alcohol_content': ['alcol', 'alcohol', 'gradazione', 'abv', 'alc.', '% vol', '%vol', 'grado alcolico', 'alc %', 'alcohol %'],
-    'description': ['descrizione', 'description', 'note', 'note vino', 'note prodotto'],
-    'notes': ['note', 'notes', 'osservazioni', 'osservazioni vino', 'note aggiuntive']
+    'name': ['nome', 'vino', 'wine', 'wine name', 'nome vino', 'denominazione', 'etichetta', 'prodotto', 'articolo', 'descrizione', 'titolo'],
+    'vintage': ['annata', 'year', 'vintage', 'anno', 'anno produzione', 'vintage year', 'anno vendemmia', 'vendemmia'],
+    'producer': ['produttore', 'producer', 'winery', 'azienda', 'casa vinicola', 'marca', 'brand', 'cantina', 'fattoria', 'azienda vinicola', 'casa produttrice'],
+    'grape_variety': ['uvaggio', 'vitigno', 'grape variety', 'varietà', 'grape_variety', 'grape', 'grapes', 'vitigni', 'varietà uva', 'uvaggio principale'],
+    'region': ['regione', 'region', 'zona', 'area', 'area geografica', 'zona geografica', 'denominazione', 'regione/denominazione', 'territorio', 'zona di produzione'],
+    'country': ['paese', 'country', 'nazione', 'nation', 'paese di origine', 'origine', 'provenienza'],
+    'wine_type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino', 'colore', 'tipologia'],
+    'classification': ['classificazione', 'classification', 'doc', 'docg', 'igt', 'dop', 'igp', 'qualità', 'denominazione di origine'],
+    'quantity': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta', 'qta_magazzino', 'qta magazzino', 'disp', 'disponibilità', 'stock'],
+    'min_quantity': ['scorta minima', 'min quantity', 'quantità minima', 'min qty', 'scorta min', 'qta min', 'min stock'],
+    'cost_price': ['costo', 'cost', 'prezzo acquisto', 'prezzo di acquisto', 'prezzo acquisto', 'costo unitario', 'costo per bottiglia', 'prezzo fornitore', 'costo d\'acquisto'],
+    'selling_price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta', 'listino', 'prezzo listino'],
+    'alcohol_content': ['alcol', 'alcohol', 'gradazione', 'abv', 'alc.', '% vol', '%vol', 'grado alcolico', 'alc %', 'alcohol %', 'grad', 'vol', 'vol.'],
+    'description': ['descrizione', 'description', 'note', 'note vino', 'note prodotto', 'dettagli', 'caratteristiche'],
+    'notes': ['note', 'notes', 'osservazioni', 'osservazioni vino', 'note aggiuntive', 'commenti', 'annotazioni']
 }
+
+
+def detect_csv_separator(file_content: bytes, sample_lines: int = 10) -> Tuple[str, Dict[str, Any]]:
+    """
+    Auto-rileva separatore CSV analizzando i primi sample_lines.
+    Returns: (separator, detection_info)
+    """
+    try:
+        # Prova encoding detection
+        encoding_result = chardet.detect(file_content[:10000])  # Prime 10KB
+        detected_encoding = encoding_result.get('encoding', 'utf-8')
+        confidence = encoding_result.get('confidence', 0.0)
+        
+        # Decodifica con encoding rilevato
+        try:
+            text = file_content.decode(detected_encoding)
+        except (UnicodeDecodeError, LookupError):
+            # Fallback: prova UTF-8, poi Latin-1
+            for enc in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                try:
+                    text = file_content.decode(enc)
+                    detected_encoding = enc
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            else:
+                detected_encoding = 'utf-8'
+                text = file_content.decode('utf-8', errors='ignore')
+        
+        lines = text.split('\n')[:sample_lines]
+        non_empty_lines = [l for l in lines if l.strip()]
+        
+        if not non_empty_lines:
+            return ',', {'encoding': detected_encoding, 'confidence': confidence, 'method': 'default'}
+        
+        # Analizza separatori più comuni
+        separators = [',', ';', '\t', '|']
+        separator_scores = {}
+        
+        for sep in separators:
+            score = 0
+            consistent = True
+            
+            for line in non_empty_lines:
+                parts = line.split(sep)
+                if len(parts) >= 2:  # Almeno 2 colonne
+                    score += len(parts)
+                else:
+                    consistent = False
+            
+            # Bonus se consistente (stesso numero colonne per tutte le righe)
+            if consistent:
+                column_counts = [len(line.split(sep)) for line in non_empty_lines]
+                if len(set(column_counts)) == 1:  # Tutte le righe hanno stesso numero colonne
+                    score *= 2
+            
+            separator_scores[sep] = score
+        
+        # Trova separatore con score più alto
+        best_sep = max(separator_scores.items(), key=lambda x: x[1])[0] if separator_scores else ','
+        
+        detection_info = {
+            'encoding': detected_encoding,
+            'confidence': confidence,
+            'separator': best_sep,
+            'scores': separator_scores,
+            'method': 'auto-detected'
+        }
+        
+        logger.info(f"CSV detection: separator='{best_sep}', encoding='{detected_encoding}' (confidence={confidence:.2f})")
+        return best_sep, detection_info
+        
+    except Exception as e:
+        logger.warning(f"Error detecting CSV separator/encoding: {e}, using defaults")
+        return ',', {'encoding': 'utf-8', 'confidence': 0.0, 'method': 'fallback'}
+
+
+def deduplicate_wines(wines_data: List[Dict[str, Any]], merge_quantities: bool = True) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Deduplica vini identici (stesso nome+produttore+vintage).
+    Se merge_quantities=True, somma le quantità.
+    Returns: (deduplicated_wines, dedup_stats)
+    """
+    seen = {}  # key -> (wine_data, index_in_original)
+    duplicates = []
+    
+    for idx, wine in enumerate(wines_data):
+        # Crea chiave univoca: normalize(name+producer+vintage)
+        name = str(wine.get('name', '')).lower().strip()
+        producer = str(wine.get('producer', '')).lower().strip() if wine.get('producer') else ''
+        vintage = wine.get('vintage')
+        
+        # Normalizza (rimuovi accenti e caratteri speciali per matching robusto)
+        def normalize_key(s: str) -> str:
+            if not s:
+                return ''
+            # Rimuovi accenti comuni
+            s = s.replace('à', 'a').replace('è', 'e').replace('é', 'e').replace('ì', 'i')
+            s = s.replace('ò', 'o').replace('ù', 'u')
+            s = re.sub(r'[^\w\s]', '', s.lower())
+            return s.strip()
+        
+        key_parts = [normalize_key(name)]
+        if producer:
+            key_parts.append(normalize_key(producer))
+        if vintage:
+            key_parts.append(str(vintage))
+        
+        key = '|'.join(key_parts)
+        
+        if key in seen:
+            # Duplicato trovato
+            existing_wine, existing_idx = seen[key]
+            duplicates.append({
+                'original_index': existing_idx,
+                'duplicate_index': idx,
+                'wine_name': name,
+                'action': 'merged' if merge_quantities else 'removed'
+            })
+            
+            if merge_quantities:
+                # Somma quantità
+                existing_qty = existing_wine.get('quantity', 1)
+                new_qty = wine.get('quantity', 1)
+                existing_wine['quantity'] = existing_qty + new_qty
+                
+                # Mantieni dati più completi (preferisci valori non null)
+                for field in ['producer', 'vintage', 'selling_price', 'cost_price', 'alcohol_content', 'description']:
+                    if not existing_wine.get(field) and wine.get(field):
+                        existing_wine[field] = wine[field]
+        else:
+            seen[key] = (wine, idx)
+    
+    deduplicated = [wine for wine, _ in seen.values()]
+    
+    stats = {
+        'original_count': len(wines_data),
+        'deduplicated_count': len(deduplicated),
+        'duplicates_found': len(duplicates),
+        'duplicates_detail': duplicates
+    }
+    
+    logger.info(f"Deduplication: {stats['original_count']} -> {stats['deduplicated_count']} wines ({stats['duplicates_found']} duplicates)")
+    return deduplicated, stats
 
 def normalize_column_name(col_name: str) -> str:
     """
@@ -119,14 +265,29 @@ def create_smart_column_mapping(original_columns: List[str]) -> Dict[str, str]:
     logger.info(f"Smart mapping created: {len(rename_mapping)}/{len(original_columns)} columns mapped")
     return rename_mapping
 
-async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
+async def process_csv_file(file_content: bytes, separator: Optional[str] = None, encoding: Optional[str] = None, deduplicate: bool = True) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Processa file CSV e estrae dati sui vini usando mapping intelligente + AI opzionale
+    Processa file CSV e estrae dati sui vini usando mapping intelligente + AI opzionale.
+    Auto-rileva separatore/encoding se non specificati.
+    
+    Returns: (wines_data, processing_info)
+    processing_info contiene: detection_info, dedup_stats, etc.
     """
+    processing_info = {}
+    
     try:
-        # Leggi CSV da bytes
-        df = pd.read_csv(io.BytesIO(file_content))
-        logger.info(f"CSV loaded with {len(df)} rows and {len(df.columns)} columns")
+        # Auto-rileva separatore/encoding se non specificati
+        if separator is None or encoding is None:
+            detected_sep, detection_info = detect_csv_separator(file_content)
+            processing_info['detection'] = detection_info
+            separator = separator or detected_sep
+            encoding = encoding or detection_info.get('encoding', 'utf-8')
+        else:
+            processing_info['detection'] = {'separator': separator, 'encoding': encoding, 'method': 'manual'}
+        
+        # Leggi CSV con separatore/encoding rilevati
+        df = pd.read_csv(io.BytesIO(file_content), sep=separator, encoding=encoding, engine='python', on_bad_lines='skip')
+        logger.info(f"CSV loaded with {len(df)} rows and {len(df.columns)} columns (sep='{separator}', enc='{encoding}')")
         
         # Salva colonne originali
         original_columns = list(df.columns)
@@ -199,6 +360,11 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
                 logger.warning(f"Error processing row {index}: {e}", exc_info=True)
                 continue
         
+        # Deduplica se richiesto
+        if deduplicate and wines_data:
+            wines_data, dedup_stats = deduplicate_wines(wines_data, merge_quantities=True)
+            processing_info['deduplication'] = dedup_stats
+        
         # Usa AI per validare e filtrare vini (batch, costo ridotto)
         validated_wines = await ai_processor.validate_wine_data(wines_data)
         
@@ -206,17 +372,24 @@ async def process_csv_file(file_content: bytes) -> List[Dict[str, Any]]:
         filtered_wines = filter_italian_wines(validated_wines)
         
         confidence = ai_analysis.get('confidence', 0.9) if ai_analysis else 0.9  # 0.9 se usato solo smart mapping
+        processing_info['confidence'] = confidence
+        processing_info['total_extracted'] = len(filtered_wines)
+        
         logger.info(f"Processed {len(filtered_wines)} wines from CSV (confidence: {confidence})")
-        return filtered_wines
+        return filtered_wines, processing_info
         
     except Exception as e:
         logger.error(f"Error processing CSV file: {e}")
         raise
 
-async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
+async def process_excel_file(file_content: bytes, deduplicate: bool = True) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Processa file Excel e estrae dati sui vini usando mapping intelligente + AI opzionale
+    Processa file Excel e estrae dati sui vini usando mapping intelligente + AI opzionale.
+    
+    Returns: (wines_data, processing_info)
     """
+    processing_info = {}
+    
     try:
         # Leggi Excel da bytes
         df = pd.read_excel(io.BytesIO(file_content))
@@ -293,6 +466,11 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
                 logger.warning(f"Error processing row {index}: {e}", exc_info=True)
                 continue
         
+        # Deduplica se richiesto
+        if deduplicate and wines_data:
+            wines_data, dedup_stats = deduplicate_wines(wines_data, merge_quantities=True)
+            processing_info['deduplication'] = dedup_stats
+        
         # Usa AI per validare e filtrare vini (batch, costo ridotto)
         validated_wines = await ai_processor.validate_wine_data(wines_data)
         
@@ -300,8 +478,11 @@ async def process_excel_file(file_content: bytes) -> List[Dict[str, Any]]:
         filtered_wines = filter_italian_wines(validated_wines)
         
         confidence = ai_analysis.get('confidence', 0.9) if ai_analysis else 0.9  # 0.9 se usato solo smart mapping
+        processing_info['confidence'] = confidence
+        processing_info['total_extracted'] = len(filtered_wines)
+        
         logger.info(f"Processed {len(filtered_wines)} wines from Excel (confidence: {confidence})")
-        return filtered_wines
+        return filtered_wines, processing_info
         
     except Exception as e:
         logger.error(f"Error processing Excel file: {e}")

@@ -11,6 +11,13 @@ from database import get_db, create_tables, save_inventory_to_db, get_inventory_
 from config import validate_config
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
+try:
+    from pdf_processor import process_pdf_file
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
+    import logging
+    logging.getLogger(__name__).warning("PDF processor not available")
 from ai_processor import ai_processor
 import logging
 from typing import Optional
@@ -83,7 +90,7 @@ async def health_check():
             "ai_enabled": ai_status,
             "database_status": db_status,
             "environment": env_status,
-            "features": ["csv_processing", "excel_processing", "ocr", "ai_enhancement"],
+            "features": ["csv_processing", "excel_processing", "ocr", "pdf_processing", "ai_enhancement", "batch_insert", "deduplication", "dry_run"],
             "endpoints": {
                 "health": "/health",
                 "process": "/process-inventory", 
@@ -109,7 +116,9 @@ async def process_inventory_background(
     file_type: str,
     file_content: bytes,
     file_name: str,
-    correlation_id: str = None
+    correlation_id: str = None,
+    mode: str = "add",  # "add" o "replace"
+    dry_run: bool = False  # Se True, solo anteprima senza salvare
 ):
     """
     Elabora inventario in background (chiamata asincrona)
@@ -139,17 +148,25 @@ async def process_inventory_background(
             # Processa file in base al tipo
             wines_data = []
             processing_method = ""
+            processing_info = {}
             
             try:
                 if file_type.lower() == "csv":
-                    wines_data = await process_csv_file(file_content)
+                    wines_data, processing_info = await process_csv_file(file_content)
                     processing_method = "csv_ai_enhanced"
                 elif file_type.lower() in ["excel", "xlsx", "xls"]:
-                    wines_data = await process_excel_file(file_content)
+                    wines_data, processing_info = await process_excel_file(file_content)
                     processing_method = "excel_ai_enhanced"
                 elif file_type.lower() in ["image", "jpg", "jpeg", "png"]:
                     wines_data = await process_image_ocr(file_content)
                     processing_method = "ocr_ai_enhanced"
+                    processing_info = {"method": "ocr"}
+                elif file_type.lower() == "pdf" and PDF_SUPPORT:
+                    wines_data = await process_pdf_file(file_content, file_name)
+                    processing_method = "pdf_enhanced"
+                    processing_info = {"method": "pdf"}
+                else:
+                    raise ValueError(f"Tipo file non supportato: {file_type}")
                 
                 logger.info(f"Job {job_id}: Extracted {len(wines_data)} wines from {file_type} file")
                 
@@ -157,6 +174,15 @@ async def process_inventory_background(
                 job.total_wines = len(wines_data)
                 job.processed_wines = len(wines_data)
                 job.processing_method = processing_method
+                # Salva processing_info come JSON nel result_data per dry-run o report
+                if processing_info:
+                    job.result_data = json.dumps({
+                        "preview": True,
+                        "wines_count": len(wines_data),
+                        "processing_info": processing_info,
+                        "mode": mode,
+                        "dry_run": dry_run
+                    })
                 await db.commit()
                 
             except Exception as processing_error:
@@ -167,10 +193,26 @@ async def process_inventory_background(
                 await db.commit()
                 return
             
+            # Se dry-run, non salvare nel database
+            if dry_run:
+                logger.info(f"Job {job_id}: Dry-run mode - skipping database save")
+                job.status = 'completed'
+                job.result_data = json.dumps({
+                    "status": "preview",
+                    "wines_count": len(wines_data),
+                    "processing_info": processing_info,
+                    "mode": mode,
+                    "dry_run": True,
+                    "message": f"Anteprima: {len(wines_data)} vini estratti (non salvati)"
+                })
+                job.completed_at = datetime.utcnow()
+                await db.commit()
+                return
+            
             # Salva nel database
             save_result = None
             try:
-                save_result = await save_inventory_to_db(db, telegram_id, business_name, wines_data)
+                save_result = await save_inventory_to_db(db, telegram_id, business_name, wines_data, mode=mode)
             except Exception as db_error:
                 logger.error(f"Job {job_id}: Database error: {db_error}")
                 job.status = 'error'
@@ -267,7 +309,9 @@ async def process_inventory(
     file_type: str = Form(...),
     file: UploadFile = File(...),
     client_msg_id: str = Form(None),  # Opzionale: per idempotenza
-    correlation_id: str = Form(None)  # Opzionale: per logging
+    correlation_id: str = Form(None),  # Opzionale: per logging
+    mode: str = Form("add"),  # "add" o "replace" - modalità import
+    dry_run: bool = Form(False)  # Se True, solo anteprima senza salvare
 ):
     """
     Crea job di elaborazione inventario e ritorna job_id immediatamente.
@@ -379,7 +423,9 @@ async def process_inventory(
                 file_type=file_type,
                 file_content=file_content,
                 file_name=file.filename or "inventario",
-                correlation_id=correlation_id  # Passa correlation_id
+                correlation_id=correlation_id,  # Passa correlation_id
+                mode=mode,  # Modalità import
+                dry_run=dry_run  # Dry-run flag
             )
         )
         
@@ -1049,9 +1095,9 @@ async def process_inventory_logic(telegram_id: int, business_name: str, file_typ
         
         # Processa file in base al tipo
         if file_type.lower() in ["csv"]:
-            wines_data = await process_csv_file(file_content)
+            wines_data, _ = await process_csv_file(file_content)
         elif file_type.lower() in ["excel", "xlsx", "xls"]:
-            wines_data = await process_excel_file(file_content)
+            wines_data, _ = await process_excel_file(file_content)
         elif file_type.lower() in ["image", "jpg", "jpeg", "png", "photo"]:
             wines_data = await process_image_ocr(file_content)
         else:
