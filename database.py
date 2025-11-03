@@ -82,6 +82,10 @@ class ProcessingJob(Base):
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     processing_method = Column(String(50))  # csv_ai_enhanced, excel_ai_enhanced, ocr_ai_enhanced
+    
+    # Idempotenza
+    client_msg_id = Column(String(200))  # ID messaggio client per idempotenza
+    update_id = Column(Integer)  # Telegram update_id per tracciamento
 
 # Configurazione database
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/gioia_processor")
@@ -283,6 +287,58 @@ async def create_tables():
 
             # Crea solo le tabelle dei modelli Base esistenti (User e ProcessingJob)
             await conn.run_sync(Base.metadata.create_all)
+            
+            # AUTO-MIGRAZIONE: Aggiungi colonne mancanti a processing_jobs per idempotenza
+            try:
+                # Verifica se colonna client_msg_id esiste
+                check_client_msg_id = sql_text("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'processing_jobs' AND column_name = 'client_msg_id'
+                """)
+                result = await conn.execute(check_client_msg_id)
+                client_msg_id_exists = result.scalar() is not None
+                
+                if not client_msg_id_exists:
+                    add_client_msg_id = sql_text("ALTER TABLE processing_jobs ADD COLUMN client_msg_id VARCHAR(200)")
+                    await conn.execute(add_client_msg_id)
+                    logger.info("Added client_msg_id column to processing_jobs")
+                
+                # Verifica se colonna update_id esiste
+                check_update_id = sql_text("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'processing_jobs' AND column_name = 'update_id'
+                """)
+                result = await conn.execute(check_update_id)
+                update_id_exists = result.scalar() is not None
+                
+                if not update_id_exists:
+                    add_update_id = sql_text("ALTER TABLE processing_jobs ADD COLUMN update_id INTEGER")
+                    await conn.execute(add_update_id)
+                    logger.info("Added update_id column to processing_jobs")
+                
+                # Crea indici per performance (se non esistono già)
+                try:
+                    create_idx = sql_text("""
+                        CREATE INDEX IF NOT EXISTS idx_jobs_user_client 
+                        ON processing_jobs (telegram_id, client_msg_id)
+                        WHERE client_msg_id IS NOT NULL
+                    """)
+                    await conn.execute(create_idx)
+                    
+                    create_unique_idx = sql_text("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_user_client 
+                        ON processing_jobs (telegram_id, client_msg_id)
+                        WHERE client_msg_id IS NOT NULL
+                    """)
+                    await conn.execute(create_unique_idx)
+                    logger.info("Created indexes for client_msg_id on processing_jobs")
+                except Exception as idx_error:
+                    logger.warning(f"Index creation skipped (may already exist): {idx_error}")
+                    
+            except Exception as migrate_error:
+                logger.warning(f"Auto-migration for processing_jobs skipped: {migrate_error}")
 
         
         logger.info("Database tables created successfully (public schema): users, processing_jobs")
