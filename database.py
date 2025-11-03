@@ -347,10 +347,17 @@ async def create_tables():
         logger.error(f"Error creating database tables: {e}")
         raise
 
-async def save_inventory_to_db(session, telegram_id: int, business_name: str, wines_data: list):
+async def save_inventory_to_db(session, telegram_id: int, business_name: str, wines_data: list, mode: str = "add"):
     """
-
+    
     Salva inventario e vini nel database nello schema utente specifico.
+    
+    Args:
+        session: Sessione database async
+        telegram_id: ID utente Telegram
+        business_name: Nome business/locale
+        wines_data: Lista di dizionari con dati vini
+        mode: Modalità salvataggio ("add" per aggiungere ai dati esistenti, "replace" per sostituire tutto)
     """
     try:
 
@@ -382,6 +389,14 @@ async def save_inventory_to_db(session, telegram_id: int, business_name: str, wi
         user_tables = await ensure_user_tables(session, telegram_id, business_name)
         table_inventario = user_tables["inventario"]
         table_backup = user_tables["backup"]
+        
+        # MODE "replace": elimina tutti i vini esistenti prima di inserire i nuovi
+        if mode == "replace":
+            delete_existing = sql_text(f"DELETE FROM {table_inventario} WHERE user_id = :user_id")
+            result = await session.execute(delete_existing, {"user_id": user.id})
+            deleted_count = result.rowcount
+            logger.info(f"Mode 'replace': eliminati {deleted_count} vini esistenti per utente {telegram_id}/{business_name}")
+            await session.flush()
         
         # Normalizza e aggiungi vini nella tabella INVENTARIO
         saved_count = 0
