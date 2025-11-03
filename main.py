@@ -601,79 +601,84 @@ async def process_movement_background(
             prodotto_consumato = None
             
             try:
-                async with db.begin():  # BEGIN transaction
-                    # Cerca vino nell'inventario con FOR UPDATE (lock riga)
-                    search_wine = sql_text(f"""
-                        SELECT * FROM {table_inventario} 
-                        WHERE user_id = :user_id 
-                        AND (
-                            LOWER(name) LIKE LOWER(:wine_name_pattern)
-                            OR LOWER(producer) LIKE LOWER(:wine_name_pattern)
-                        )
-                        FOR UPDATE  -- ✅ LOCK row per serializzare accessi
-                        LIMIT 1
-                    """)
-                    
-                    wine_name_pattern = f"%{wine_name}%"
-                    result = await db.execute(search_wine, {
-                        "user_id": user.id,
-                        "wine_name_pattern": wine_name_pattern
-                    })
-                    wine_row = result.fetchone()
-                    
-                    if not wine_row:
-                        raise ValueError(f"Vino '{wine_name}' non trovato nell'inventario")
-                    
-                    # Ottieni quantità corrente
-                    quantity_before = wine_row.quantity if wine_row.quantity else 0
-                    
-                    # Calcola nuova quantità
-                    if movement_type == 'consumo':
-                        if quantity_before < quantity:
-                            raise ValueError(f"Quantità insufficiente: disponibili {quantity_before}, richieste {quantity}")
-                        quantity_after = quantity_before - quantity
-                        prodotto_rifornito = None
-                        prodotto_consumato = quantity
-                    else:  # rifornimento
-                        quantity_after = quantity_before + quantity
-                        prodotto_rifornito = quantity
-                        prodotto_consumato = None
-                    
-                    # ✅ UPDATE in stessa transazione
-                    update_wine = sql_text(f"""
-                        UPDATE {table_inventario}
-                        SET quantity = :quantity_after,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = :wine_id
-                    """)
-                    await db.execute(update_wine, {
-                        "quantity_after": quantity_after,
-                        "wine_id": wine_row.id
-                    })
-                    
-                    # ✅ INSERT movimento in stessa transazione
-                    insert_movement = sql_text(f"""
-                        INSERT INTO {table_consumi}
-                        (user_id, data, Prodotto, prodotto_rifornito, prodotto_consumato)
-                        VALUES
-                        (:user_id, CURRENT_TIMESTAMP, :prodotto, :prodotto_rifornito, :prodotto_consumato)
-                        RETURNING id
-                    """)
-                    await db.execute(insert_movement, {
-                        "user_id": user.id,
-                        "prodotto": wine_row.name,  # Nome corretto dal database
-                        "prodotto_rifornito": prodotto_rifornito,
-                        "prodotto_consumato": prodotto_consumato
-                    })
-                    
-                    # ✅ COMMIT automatico se tutto OK (context manager)
+                # Cerca vino nell'inventario con FOR UPDATE (lock riga) - inizia transazione
+                search_wine = sql_text(f"""
+                    SELECT * FROM {table_inventario} 
+                    WHERE user_id = :user_id 
+                    AND (
+                        LOWER(name) LIKE LOWER(:wine_name_pattern)
+                        OR LOWER(producer) LIKE LOWER(:wine_name_pattern)
+                    )
+                    FOR UPDATE  -- ✅ LOCK row per serializzare accessi
+                    LIMIT 1
+                """)
+                
+                wine_name_pattern = f"%{wine_name}%"
+                result = await db.execute(search_wine, {
+                    "user_id": user.id,
+                    "wine_name_pattern": wine_name_pattern
+                })
+                wine_row = result.fetchone()
+                
+                if not wine_row:
+                    raise ValueError(f"Vino '{wine_name}' non trovato nell'inventario")
+                
+                # Ottieni quantità corrente
+                quantity_before = wine_row.quantity if wine_row.quantity else 0
+                
+                # Calcola nuova quantità
+                if movement_type == 'consumo':
+                    if quantity_before < quantity:
+                        raise ValueError(f"Quantità insufficiente: disponibili {quantity_before}, richieste {quantity}")
+                    quantity_after = quantity_before - quantity
+                    prodotto_rifornito = None
+                    prodotto_consumato = quantity
+                else:  # rifornimento
+                    quantity_after = quantity_before + quantity
+                    prodotto_rifornito = quantity
+                    prodotto_consumato = None
+                
+                # ✅ UPDATE in stessa transazione
+                update_wine = sql_text(f"""
+                    UPDATE {table_inventario}
+                    SET quantity = :quantity_after,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :wine_id
+                """)
+                await db.execute(update_wine, {
+                    "quantity_after": quantity_after,
+                    "wine_id": wine_row.id
+                })
+                
+                # ✅ INSERT movimento in stessa transazione
+                insert_movement = sql_text(f"""
+                    INSERT INTO {table_consumi}
+                    (user_id, data, Prodotto, prodotto_rifornito, prodotto_consumato)
+                    VALUES
+                    (:user_id, CURRENT_TIMESTAMP, :prodotto, :prodotto_rifornito, :prodotto_consumato)
+                    RETURNING id
+                """)
+                await db.execute(insert_movement, {
+                    "user_id": user.id,
+                    "prodotto": wine_row.name,  # Nome corretto dal database
+                    "prodotto_rifornito": prodotto_rifornito,
+                    "prodotto_consumato": prodotto_consumato
+                })
+                
+                # ✅ COMMIT esplicito per garantire atomicità
+                await db.commit()
             except ValueError as ve:
-                # Errore validazione: aggiorna job e ritorna
+                # Errore validazione: rollback e aggiorna job
+                await db.rollback()
                 job.status = 'error'
                 job.error_message = str(ve)
                 job.completed_at = datetime.utcnow()
                 await db.commit()
                 return
+            except Exception as te:
+                # Errore transazione: rollback
+                await db.rollback()
+                raise  # Rilancia per essere gestito dal catch esterno
             
             processing_time = (datetime.utcnow() - start_time).total_seconds()
             
