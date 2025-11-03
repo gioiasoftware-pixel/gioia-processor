@@ -311,9 +311,62 @@ async def create_tables():
         async with engine.begin() as conn:
             # Crea solo le tabelle dei modelli Base esistenti (User e ProcessingJob)
             await conn.run_sync(Base.metadata.create_all)
-        
-        logger.info("Database tables created successfully (public schema): users, processing_jobs")
-        logger.info("Note: Tabelle inventario vengono create per-utente nello schema public via ensure_user_tables()")
+
+        # Allinea schema di sistema (idempotente): colonne e indici mancanti, tabelle service
+        async with AsyncSessionLocal() as session:
+            try:
+                # Idempotenza su processing_jobs
+                await session.execute(sql_text("""
+                    ALTER TABLE processing_jobs
+                      ADD COLUMN IF NOT EXISTS client_msg_id VARCHAR(100),
+                      ADD COLUMN IF NOT EXISTS update_id INTEGER;
+                """))
+
+                # Indice unico parziale per idempotenza
+                await session.execute(sql_text("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_processing_jobs_telegram_client_msg
+                      ON processing_jobs (telegram_id, client_msg_id)
+                      WHERE client_msg_id IS NOT NULL;
+                """))
+
+                # Tabella rate limiting coerente col codice attuale
+                await session.execute(sql_text("""
+                    CREATE TABLE IF NOT EXISTS rate_limits (
+                        id SERIAL PRIMARY KEY,
+                        telegram_id INTEGER NOT NULL,
+                        action VARCHAR(50) NOT NULL,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """))
+
+                await session.execute(sql_text("""
+                    CREATE INDEX IF NOT EXISTS idx_rate_limits_telegram_action_timestamp
+                        ON rate_limits (telegram_id, action, timestamp DESC);
+                """))
+
+                # Compatibilità temporanea: alcune versioni potrebbero interrogare rate_limit_logs
+                await session.execute(sql_text("""
+                    DO $$
+                    BEGIN
+                      IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.views
+                        WHERE table_schema = 'public' AND table_name = 'rate_limit_logs'
+                      ) THEN
+                        CREATE VIEW rate_limit_logs AS
+                          SELECT id, telegram_id, action, timestamp AS created_at
+                          FROM rate_limits;
+                      END IF;
+                    END$$;
+                """))
+
+                await session.commit()
+                logger.info("Database tables created successfully (public schema): users, processing_jobs")
+                logger.info("System schema aligned: processing_jobs idempotency columns, rate_limits table, compatibility view")
+                logger.info("Note: Tabelle inventario vengono create per-utente nello schema public via ensure_user_tables()")
+            except Exception as align_error:
+                await session.rollback()
+                logger.error(f"Error aligning system schema: {align_error}")
+                # Non bloccare startup: al limite fallirà l'endpoint con errore chiaro
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")
         raise
