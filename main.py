@@ -785,6 +785,79 @@ async def process_movement(
         logger.error(f"Error creating movement job: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+@app.post("/update-wine-field")
+async def update_wine_field(
+    telegram_id: int = Form(...),
+    business_name: str = Form(...),
+    wine_id: int = Form(...),
+    field: str = Form(...),
+    value: str = Form(...)
+):
+    """
+    Aggiorna un singolo campo per un vino dell'inventario utente.
+    Campi supportati: producer, vintage, grape_variety, classification, selling_price, cost_price, alcohol_content, description, notes
+    """
+    try:
+        allowed_fields = {
+            'producer': 'producer',
+            'vintage': 'vintage',
+            'grape_variety': 'grape_variety',
+            'classification': 'classification',
+            'selling_price': 'selling_price',
+            'cost_price': 'cost_price',
+            'alcohol_content': 'alcohol_content',
+            'description': 'description',
+            'notes': 'notes',
+        }
+        if field not in allowed_fields:
+            raise HTTPException(status_code=400, detail=f"Field not allowed: {field}")
+
+        # Normalizza tipi per alcuni campi
+        def cast_value(f: str, v: str):
+            if f in ('vintage',):
+                try:
+                    return int(v)
+                except:
+                    raise HTTPException(status_code=400, detail=f"Invalid integer for {f}")
+            if f in ('selling_price', 'cost_price', 'alcohol_content'):
+                try:
+                    return float(str(v).replace(',', '.'))
+                except:
+                    raise HTTPException(status_code=400, detail=f"Invalid number for {f}")
+            return v
+
+        column = allowed_fields[field]
+        new_value = cast_value(field, value)
+
+        async for db in get_db():
+            # Assicura esistenza tabelle
+            user = (await db.execute(select(User).where(User.telegram_id == telegram_id))).scalar_one_or_none()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            tables = await ensure_user_tables(db, telegram_id, business_name)
+            table_inventario = tables["inventario"]
+
+            from sqlalchemy import text as sql_text
+            update_stmt = sql_text(f"""
+                UPDATE {table_inventario}
+                SET {column} = :val, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :wine_id AND user_id = :user_id
+                RETURNING id
+            """)
+            result = await db.execute(update_stmt, {"val": new_value, "wine_id": wine_id, "user_id": user.id})
+            updated = result.scalar_one_or_none()
+            if not updated:
+                await db.rollback()
+                raise HTTPException(status_code=404, detail="Wine not found")
+            await db.commit()
+            return {"status": "success", "wine_id": wine_id, "field": field}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating wine field: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 @app.get("/ai/status")
 async def ai_status():
     """Stato dell'AI processor"""
