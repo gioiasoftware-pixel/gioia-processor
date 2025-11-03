@@ -19,7 +19,7 @@ COLUMN_MAPPINGS = {
     'country': ['paese', 'country', 'nazione', 'nation', 'paese di origine', 'origine', 'provenienza'],
     'wine_type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino', 'colore', 'tipologia'],
     'classification': ['classificazione', 'classification', 'doc', 'docg', 'igt', 'dop', 'igp', 'qualità', 'denominazione di origine'],
-    'quantity': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta', 'qta_magazzino', 'qta magazzino', 'disp', 'disponibilità', 'stock'],
+    'quantity': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta', 'qta_magazzino', 'qta magazzino', 'disp', 'disponibilità', 'stock', 'q iniziale', 'q. iniziale', 'quantità iniziale', 'q iniz', 'q. iniz', 'q iniziale magazzino', 'quantità iniz', 'q iniziale stock'],
     'min_quantity': ['scorta minima', 'min quantity', 'quantità minima', 'min qty', 'scorta min', 'qta min', 'min stock'],
     'cost_price': ['costo', 'cost', 'prezzo acquisto', 'prezzo di acquisto', 'prezzo acquisto', 'costo unitario', 'costo per bottiglia', 'prezzo fornitore', 'costo d\'acquisto'],
     'selling_price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta', 'listino', 'prezzo listino'],
@@ -304,13 +304,26 @@ async def process_csv_file(file_content: bytes, separator: Optional[str] = None,
         key_columns = ['name', 'producer', 'vintage']
         mapped_key_columns = [col for col in key_columns if col in smart_mapping.values()]
         
+        # IMPORTANTE: quantity è obbligatoria nell'inventario, verifica se è stata mappata
+        quantity_mapped = 'quantity' in smart_mapping.values()
+        
         if len(mapped_key_columns) < 2:  # Se mancano troppe colonne chiave, usa AI
             logger.info("Smart mapping insufficiente, usando AI per completare")
             csv_text = df.to_string()
             ai_analysis = await ai_processor.analyze_csv_structure(csv_text)
             ai_mapping = ai_analysis.get('column_mapping', {})
+        elif not quantity_mapped:  # Se quantity non è stata mappata, usa AI per trovarla
+            logger.warning("Colonna 'quantity' non riconosciuta dal mapping intelligente, usando AI per identificarla")
+            csv_text = df.to_string()
+            ai_analysis = await ai_processor.analyze_csv_structure(csv_text)
+            ai_mapping = ai_analysis.get('column_mapping', {})
+            # Verifica che l'AI abbia trovato quantity
+            if 'quantity' in ai_mapping:
+                logger.info(f"AI ha identificato colonna quantità: '{ai_mapping['quantity']}'")
+            else:
+                logger.warning("AI non ha identificato la colonna quantità nel CSV")
         else:
-            logger.info(f"Smart mapping sufficiente ({len(mapped_key_columns)}/{len(key_columns)} key columns), skipping AI")
+            logger.info(f"Smart mapping sufficiente ({len(mapped_key_columns)}/{len(key_columns)} key columns), quantity mappata, skipping AI")
         
         # Combina mapping intelligente e AI (AI ha priorità se c'è conflitto)
         rename_mapping = smart_mapping.copy()
@@ -410,13 +423,26 @@ async def process_excel_file(file_content: bytes, deduplicate: bool = True) -> T
         key_columns = ['name', 'producer', 'vintage']
         mapped_key_columns = [col for col in key_columns if col in smart_mapping.values()]
         
+        # IMPORTANTE: quantity è obbligatoria nell'inventario, verifica se è stata mappata
+        quantity_mapped = 'quantity' in smart_mapping.values()
+        
         if len(mapped_key_columns) < 2:  # Se mancano troppe colonne chiave, usa AI
             logger.info("Smart mapping insufficiente, usando AI per completare")
             excel_text = df.to_string()
             ai_analysis = await ai_processor.analyze_csv_structure(excel_text)
             ai_mapping = ai_analysis.get('column_mapping', {})
+        elif not quantity_mapped:  # Se quantity non è stata mappata, usa AI per trovarla
+            logger.warning("Colonna 'quantity' non riconosciuta dal mapping intelligente, usando AI per identificarla")
+            excel_text = df.to_string()
+            ai_analysis = await ai_processor.analyze_csv_structure(excel_text)
+            ai_mapping = ai_analysis.get('column_mapping', {})
+            # Verifica che l'AI abbia trovato quantity
+            if 'quantity' in ai_mapping:
+                logger.info(f"AI ha identificato colonna quantità: '{ai_mapping['quantity']}'")
+            else:
+                logger.warning("AI non ha identificato la colonna quantità nell'Excel")
         else:
-            logger.info(f"Smart mapping sufficiente ({len(mapped_key_columns)}/{len(key_columns)} key columns), skipping AI")
+            logger.info(f"Smart mapping sufficiente ({len(mapped_key_columns)}/{len(key_columns)} key columns), quantity mappata, skipping AI")
         
         # Combina mapping intelligente e AI (AI ha priorità se c'è conflitto)
         rename_mapping = smart_mapping.copy()

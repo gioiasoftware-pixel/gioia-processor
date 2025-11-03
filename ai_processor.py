@@ -31,6 +31,10 @@ Analizza questo file CSV di inventario vini e identifica:
 3. Identifica il separatore (virgola, punto e virgola, tab)
 4. Suggerisci miglioramenti per la struttura
 
+IMPORTANTE: La colonna QUANTITÀ è OBBLIGATORIA e DEVE essere sempre identificata.
+Cerca colonne che potrebbero rappresentare quantità anche se hanno nomi diversi come:
+"q iniziale", "q. iniziale", "quantità iniziale", "qty", "qta", "pezzi", "bottiglie", "scorta", "stock", "disp", "disponibilità".
+
 CSV Content:
 {csv_content[:2000]}  # Limita a 2000 caratteri per evitare limiti token
 
@@ -49,6 +53,9 @@ Rispondi SOLO con JSON nel formato:
     "suggestions": ["suggerimento1", "suggerimento2"],
     "confidence": 0.95
 }}
+
+NOTA: Se trovi una colonna che sembra rappresentare quantità ma non è esplicitamente chiamata "quantità", 
+usa comunque "quantity" come chiave nel mapping. La colonna quantity DEVE essere sempre presente.
 """
             
             # Verifica limiti token
