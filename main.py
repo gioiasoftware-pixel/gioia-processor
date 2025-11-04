@@ -191,6 +191,28 @@ async def process_inventory_background(
                 job.error_message = f"Error processing file: {str(processing_error)}"
                 job.completed_at = datetime.utcnow()
                 await db.commit()
+                
+                # Notifica admin per errore processing
+                try:
+                    from admin_notifications import enqueue_admin_notification
+                    
+                    await enqueue_admin_notification(
+                        event_type="error",
+                        telegram_id=telegram_id,
+                        payload={
+                            "business_name": business_name,
+                            "error_type": "processing_error",
+                            "error_message": str(processing_error),
+                            "error_code": "PROCESSING_ERROR",
+                            "component": "gioia-processor",
+                            "file_type": file_type,
+                            "file_size_bytes": len(file_content) if file_content else 0
+                        },
+                        correlation_id=correlation_id
+                    )
+                except Exception as notif_error:
+                    logger.warning(f"Errore invio notifica admin: {notif_error}")
+                
                 return
             
             # Se dry-run, non salvare nel database
@@ -219,6 +241,27 @@ async def process_inventory_background(
                 job.error_message = f"Database error: {str(db_error)}"
                 job.completed_at = datetime.utcnow()
                 await db.commit()
+                
+                # Notifica admin per errore database
+                try:
+                    from admin_notifications import enqueue_admin_notification
+                    
+                    await enqueue_admin_notification(
+                        event_type="error",
+                        telegram_id=telegram_id,
+                        payload={
+                            "business_name": business_name,
+                            "error_type": "database_error",
+                            "error_message": str(db_error),
+                            "error_code": "DATABASE_ERROR",
+                            "component": "gioia-processor",
+                            "file_type": file_type
+                        },
+                        correlation_id=correlation_id
+                    )
+                except Exception as notif_error:
+                    logger.warning(f"Errore invio notifica admin: {notif_error}")
+                
                 return
             
             processing_time = (datetime.utcnow() - start_time).total_seconds()
@@ -285,6 +328,29 @@ async def process_inventory_background(
             
             logger.info(f"Job {job_id}: Completed successfully")
             
+            # Notifica admin per inventario caricato
+            try:
+                from admin_notifications import enqueue_admin_notification
+                
+                await enqueue_admin_notification(
+                    event_type="inventory_uploaded",
+                    telegram_id=telegram_id,
+                    payload={
+                        "business_name": business_name,
+                        "file_type": file_type,
+                        "file_size_bytes": len(file_content),
+                        "wines_processed": len(wines_data),
+                        "wines_saved": saved_count,
+                        "warnings_count": warning_count,
+                        "errors_count": error_count,
+                        "processing_duration_seconds": round(processing_time, 2),
+                        "processing_method": processing_method
+                    },
+                    correlation_id=correlation_id
+                )
+            except Exception as notif_error:
+                logger.warning(f"Errore invio notifica admin: {notif_error}")
+            
             break
             
     except Exception as e:
@@ -298,6 +364,27 @@ async def process_inventory_background(
                 job.error_message = f"Unexpected error: {str(e)}"
                 job.completed_at = datetime.utcnow()
                 await db.commit()
+                
+                # Notifica admin per errore inaspettato
+                try:
+                    from admin_notifications import enqueue_admin_notification
+                    
+                    await enqueue_admin_notification(
+                        event_type="error",
+                        telegram_id=telegram_id,
+                        payload={
+                            "business_name": business_name,
+                            "error_type": "unexpected_error",
+                            "error_message": str(e),
+                            "error_code": "UNEXPECTED_ERROR",
+                            "component": "gioia-processor",
+                            "job_id": job_id
+                        },
+                        correlation_id=correlation_id
+                    )
+                except Exception as notif_error:
+                    logger.warning(f"Errore invio notifica admin: {notif_error}")
+                
                 break
         except:
             pass
@@ -697,18 +784,24 @@ async def process_movement_background(
                 })
                 
                 # ✅ INSERT movimento in stessa transazione
+                # Calcola quantity_change (positivo per rifornimento, negativo per consumo)
+                quantity_change = quantity if movement_type == 'rifornimento' else -quantity
+                
                 insert_movement = sql_text(f"""
                     INSERT INTO {table_consumi}
-                    (user_id, data, Prodotto, prodotto_rifornito, prodotto_consumato)
+                    (user_id, wine_name, wine_producer, movement_type, quantity_change, quantity_before, quantity_after, movement_date)
                     VALUES
-                    (:user_id, CURRENT_TIMESTAMP, :prodotto, :prodotto_rifornito, :prodotto_consumato)
+                    (:user_id, :wine_name, :wine_producer, :movement_type, :quantity_change, :quantity_before, :quantity_after, CURRENT_TIMESTAMP)
                     RETURNING id
                 """)
                 await db.execute(insert_movement, {
                     "user_id": user.id,
-                    "prodotto": wine_row.name,  # Nome corretto dal database
-                    "prodotto_rifornito": prodotto_rifornito,
-                    "prodotto_consumato": prodotto_consumato
+                    "wine_name": wine_row.name,  # Nome corretto dal database
+                    "wine_producer": getattr(wine_row, 'producer', None),
+                    "movement_type": movement_type,
+                    "quantity_change": quantity_change,
+                    "quantity_before": quantity_before,
+                    "quantity_after": quantity_after
                 })
                 
                 # ✅ COMMIT esplicito per garantire atomicità
