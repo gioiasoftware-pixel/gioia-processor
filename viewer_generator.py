@@ -181,6 +181,8 @@ async def generate_viewer_html(
         raise
 
 
+# Cache in-memory per dati inventario (telegram_id -> (data, timestamp))
+_viewer_data_cache = {}
 # Cache in-memory per HTML generati (view_id -> (html, timestamp))
 _viewer_cache = {}
 _cache_expiry_seconds = 3600  # 1 ora
@@ -216,6 +218,141 @@ def store_viewer_html(view_id: str, html: str):
     import time
     _viewer_cache[view_id] = (html, time.time())
     logger.info(f"[VIEWER_CACHE] HTML salvato in cache per view_id={view_id}")
+
+
+async def prepare_viewer_data(
+    db,
+    telegram_id: int,
+    business_name: str,
+    correlation_id: str = None
+) -> Dict[str, Any]:
+    """
+    Estrae dati inventario dal DB e li prepara per il viewer.
+    Salva in cache per essere recuperati successivamente.
+    """
+    import time
+    from database import ensure_user_tables, User
+    from sqlalchemy import select
+    
+    logger.info(
+        f"[VIEWER_DATA] Preparazione dati inventario per telegram_id={telegram_id}, "
+        f"business_name={business_name}, correlation_id={correlation_id}"
+    )
+    
+    # Verifica utente
+    stmt = select(User).where(User.telegram_id == telegram_id)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise ValueError(f"Utente non trovato per telegram_id={telegram_id}")
+    
+    # Assicura che tabelle esistano
+    user_tables = await ensure_user_tables(db, telegram_id, business_name)
+    table_inventario = user_tables["inventario"]
+    
+    # Recupera tutti i vini
+    query_wines = sql_text(f"""
+        SELECT 
+            name,
+            producer,
+            vintage,
+            quantity,
+            selling_price,
+            wine_type,
+            min_quantity,
+            updated_at
+        FROM {table_inventario}
+        WHERE user_id = :user_id
+        ORDER BY name, vintage
+    """)
+    
+    result = await db.execute(query_wines, {"user_id": user.id})
+    wines_rows = result.fetchall()
+    
+    # Formatta dati per viewer
+    rows = []
+    facets = {
+        "type": {},
+        "vintage": {},
+        "winery": {}
+    }
+    
+    for wine in wines_rows:
+        # Formatta riga
+        row = {
+            "name": wine.name or "-",
+            "winery": wine.producer or "-",
+            "vintage": wine.vintage,
+            "qty": wine.quantity or 0,
+            "price": float(wine.selling_price) if wine.selling_price else 0.0,
+            "type": wine.wine_type or "Altro",
+            "critical": (
+                wine.quantity is not None 
+                and wine.min_quantity is not None 
+                and wine.quantity <= wine.min_quantity
+            )
+        }
+        rows.append(row)
+        
+        # Calcola facets
+        wine_type = wine.wine_type or "Altro"
+        facets["type"][wine_type] = facets["type"].get(wine_type, 0) + 1
+        
+        if wine.vintage:
+            vintage_str = str(wine.vintage)
+            facets["vintage"][vintage_str] = facets["vintage"].get(vintage_str, 0) + 1
+        
+        if wine.producer:
+            facets["winery"][wine.producer] = facets["winery"].get(wine.producer, 0) + 1
+    
+    # Meta info
+    last_update = datetime.utcnow().isoformat()
+    if wines_rows:
+        last_update_row = max(wines_rows, key=lambda w: w.updated_at if w.updated_at else datetime.min)
+        last_update = last_update_row.updated_at.isoformat() if last_update_row.updated_at else datetime.utcnow().isoformat()
+    
+    data = {
+        "rows": rows,
+        "facets": facets,
+        "meta": {
+            "total_rows": len(rows),
+            "last_update": last_update
+        }
+    }
+    
+    # Salva in cache
+    _viewer_data_cache[telegram_id] = (data, time.time())
+    
+    logger.info(
+        f"[VIEWER_DATA] Dati preparati e salvati in cache: rows={len(rows)}, "
+        f"telegram_id={telegram_id}, correlation_id={correlation_id}"
+    )
+    
+    return data
+
+
+def get_viewer_data_from_cache(telegram_id: int) -> tuple[Dict[str, Any] | None, bool]:
+    """
+    Recupera dati inventario dalla cache se disponibili e non scaduti.
+    
+    Returns:
+        (data, found) - Dati e flag se trovati
+    """
+    import time
+    
+    if telegram_id not in _viewer_data_cache:
+        return None, False
+    
+    data, timestamp = _viewer_data_cache[telegram_id]
+    
+    # Verifica scadenza
+    if time.time() - timestamp > _cache_expiry_seconds:
+        logger.info(f"[VIEWER_DATA_CACHE] Dati per telegram_id={telegram_id} scaduti, rimuovo dalla cache")
+        del _viewer_data_cache[telegram_id]
+        return None, False
+    
+    return data, True
 
 
 def _get_html_template() -> str:

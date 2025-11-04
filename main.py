@@ -74,7 +74,7 @@ async def health_check():
         try:
             async for db in get_db():
                 # Test connessione database
-                await db.execute(text("SELECT 1"))
+                await db.execute(sql_text("SELECT 1"))
                 break
         except Exception as e:
             db_status = f"error: {str(e)[:100]}"
@@ -825,54 +825,79 @@ async def get_inventory_snapshot(token: str = Query(...)):
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 
-@app.post("/api/viewer/generate")
-async def generate_viewer(
+@app.post("/api/viewer/prepare-data")
+async def prepare_viewer_data_endpoint(
     telegram_id: int = Form(...),
     business_name: str = Form(...),
     correlation_id: str = Form(None)
 ):
     """
-    Genera HTML viewer con dati inventario embedded.
-    Estrae dati DB e genera HTML in modo sincrono, poi salva in cache.
+    Job 1: Estrae dati inventario dal DB e li prepara per il viewer.
+    Salva in cache per essere recuperati dal viewer.
     """
-    import uuid
-    from viewer_generator import generate_viewer_html_from_db, store_viewer_html
+    from viewer_generator import prepare_viewer_data
     
     try:
         logger.info(
-            f"[VIEWER_GENERATE] Richiesta generazione viewer per telegram_id={telegram_id}, "
+            f"[VIEWER_PREPARE] Preparazione dati per telegram_id={telegram_id}, "
             f"business_name={business_name}, correlation_id={correlation_id}"
         )
         
-        # Genera view_id univoco
-        view_id = str(uuid.uuid4())
-        
-        # Estrai dati e genera HTML (sincrono)
         async for db in get_db():
-            html = await generate_viewer_html_from_db(
+            data = await prepare_viewer_data(
                 db, telegram_id, business_name, correlation_id
             )
             
-            # Salva in cache
-            store_viewer_html(view_id, html)
-            
             logger.info(
-                f"[VIEWER_GENERATE] HTML generato e salvato per view_id={view_id}, "
-                f"telegram_id={telegram_id}, correlation_id={correlation_id}, "
-                f"html_length={len(html)}"
+                f"[VIEWER_PREPARE] Dati preparati con successo: rows={len(data.get('rows', []))}, "
+                f"telegram_id={telegram_id}, correlation_id={correlation_id}"
             )
             break
         
         return {
-            "view_id": view_id,
             "status": "completed",
-            "viewer_url": f"https://gioia-processor-production.up.railway.app/api/viewer/{view_id}"
+            "telegram_id": telegram_id,
+            "message": "Dati preparati e pronti"
         }
         
     except Exception as e:
         logger.error(
-            f"[VIEWER_GENERATE] Errore generazione viewer: {e}, "
+            f"[VIEWER_PREPARE] Errore preparazione dati: {e}, "
             f"telegram_id={telegram_id}, correlation_id={correlation_id}",
+            exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+
+@app.get("/api/viewer/data")
+async def get_viewer_data(telegram_id: int = Query(...)):
+    """
+    Restituisce dati inventario preparati dalla cache.
+    Chiamato dal viewer per ottenere i dati.
+    """
+    from viewer_generator import get_viewer_data_from_cache
+    
+    try:
+        logger.info(f"[VIEWER_DATA] Richiesta dati per telegram_id={telegram_id}")
+        
+        data, found = get_viewer_data_from_cache(telegram_id)
+        
+        if not found:
+            logger.warning(f"[VIEWER_DATA] Dati non trovati in cache per telegram_id={telegram_id}")
+            raise HTTPException(status_code=404, detail="Dati non disponibili. Riprova più tardi.")
+        
+        logger.info(
+            f"[VIEWER_DATA] Dati restituiti: rows={len(data.get('rows', []))}, "
+            f"telegram_id={telegram_id}"
+        )
+        
+        return data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"[VIEWER_DATA] Errore recupero dati: {e}, telegram_id={telegram_id}",
             exc_info=True
         )
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
@@ -1434,7 +1459,7 @@ async def test_database_connection():
     """Test connessione database"""
     try:
         async for db in get_db():
-            await db.execute(text("SELECT 1"))
+            await db.execute(sql_text("SELECT 1"))
             return {"status": "connected", "error": None}
     except Exception as e:
         return {"status": "error", "error": str(e)}
