@@ -701,15 +701,21 @@ async def get_inventory_snapshot(token: str = Query(...)):
     Richiede token JWT valido come query parameter.
     """
     try:
+        logger.info(f"[VIEWER_API] Richiesta snapshot ricevuta, token_length={len(token)}")
+        
         # Valida token JWT
         token_data = validate_viewer_token(token)
         if not token_data:
+            logger.warning(f"[VIEWER_API] Token JWT non valido o scaduto, token_length={len(token)}")
             raise HTTPException(status_code=401, detail="Token scaduto o non valido")
         
         telegram_id = token_data["telegram_id"]
         business_name = token_data["business_name"]
         
-        logger.info(f"Snapshot richiesto per {telegram_id}/{business_name}")
+        logger.info(
+            f"[VIEWER_API] Snapshot richiesto per telegram_id={telegram_id}, "
+            f"business_name={business_name}, token_validated=True"
+        )
         
         async for db in get_db():
             # Verifica che utente esista
@@ -795,13 +801,26 @@ async def get_inventory_snapshot(token: str = Query(...)):
                 }
             }
             
-            logger.info(f"Snapshot restituito: {len(rows)} vini per {telegram_id}/{business_name}")
+            logger.info(
+                f"[VIEWER_API] Snapshot restituito con successo: rows={len(rows)}, "
+                f"telegram_id={telegram_id}, business_name={business_name}, "
+                f"facets_type_count={len(facets.get('type', {}))}, "
+                f"facets_vintage_count={len(facets.get('vintage', {}))}, "
+                f"facets_winery_count={len(facets.get('winery', {}))}"
+            )
             return response
             
-    except HTTPException:
+    except HTTPException as he:
+        logger.error(
+            f"[VIEWER_API] HTTPException durante snapshot: status={he.status_code}, "
+            f"detail={he.detail}, token_length={len(token) if 'token' in locals() else 0}"
+        )
         raise
     except Exception as e:
-        logger.error(f"Errore snapshot inventario: {e}", exc_info=True)
+        logger.error(
+            f"[VIEWER_API] Errore snapshot inventario: {e}, token_length={len(token) if 'token' in locals() else 0}",
+            exc_info=True
+        )
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 @app.get("/api/inventory/export.csv")
