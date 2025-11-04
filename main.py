@@ -21,9 +21,10 @@ except ImportError:
 from ai_processor import ai_processor
 import logging
 from typing import Optional
+from logging_config import setup_colored_logging
 
-# Configurazione logging
-logging.basicConfig(level=logging.INFO)
+# Configurazione logging colorato
+setup_colored_logging("processor")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Gioia Processor", version="1.0.0")
