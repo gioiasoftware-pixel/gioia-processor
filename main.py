@@ -1125,14 +1125,30 @@ async def process_movement_background(
                 wine_row = result.fetchone()
                 
                 if not wine_row:
+                    logger.warning(
+                        f"[MOVEMENT] Job {job_id}: Wine not found | "
+                        f"telegram_id={telegram_id}, business={business_name}, "
+                        f"search_pattern='{wine_name_pattern}', table={table_inventario}"
+                    )
                     raise ValueError(f"Vino '{wine_name}' non trovato nell'inventario")
                 
                 # Ottieni quantità corrente
                 quantity_before = wine_row.quantity if wine_row.quantity else 0
                 
+                logger.info(
+                    f"[MOVEMENT] Job {job_id}: Found wine | "
+                    f"wine_id={wine_row.id}, wine_name='{wine_row.name}', "
+                    f"quantity_before={quantity_before}, requested={quantity}"
+                )
+                
                 # Calcola nuova quantità
                 if movement_type == 'consumo':
                     if quantity_before < quantity:
+                        logger.warning(
+                            f"[MOVEMENT] Job {job_id}: Insufficient quantity | "
+                            f"wine_id={wine_row.id}, wine_name='{wine_row.name}', "
+                            f"available={quantity_before}, requested={quantity}"
+                        )
                         raise ValueError(f"Quantità insufficiente: disponibili {quantity_before}, richieste {quantity}")
                     quantity_after = quantity_before - quantity
                     prodotto_rifornito = None
@@ -1180,14 +1196,27 @@ async def process_movement_background(
             except ValueError as ve:
                 # Errore validazione: rollback e aggiorna job
                 await db.rollback()
+                error_msg = f"Validation error: {str(ve)}"
+                logger.error(
+                    f"[MOVEMENT] Job {job_id}: {error_msg} | "
+                    f"telegram_id={telegram_id}, business={business_name}, "
+                    f"wine_name={wine_name}, movement_type={movement_type}, quantity={quantity}"
+                )
                 job.status = 'error'
-                job.error_message = str(ve)
+                job.error_message = error_msg
                 job.completed_at = datetime.utcnow()
                 await db.commit()
                 return
             except Exception as te:
                 # Errore transazione: rollback
                 await db.rollback()
+                logger.error(
+                    f"[MOVEMENT] Job {job_id}: Transaction error | "
+                    f"telegram_id={telegram_id}, business={business_name}, "
+                    f"wine_name={wine_name}, movement_type={movement_type}, quantity={quantity} | "
+                    f"Error: {str(te)}",
+                    exc_info=True
+                )
                 raise  # Rilancia per essere gestito dal catch esterno
             
             processing_time = (datetime.utcnow() - start_time).total_seconds()
@@ -1219,19 +1248,25 @@ async def process_movement_background(
             break
             
     except Exception as e:
-        logger.error(f"Job {job_id}: Unexpected error: {e}")
+        error_msg = f"Unexpected error: {str(e)}"
+        logger.error(
+            f"[MOVEMENT] Job {job_id}: {error_msg} | "
+            f"telegram_id={telegram_id}, business={business_name}, "
+            f"wine_name={wine_name}, movement_type={movement_type}, quantity={quantity}",
+            exc_info=True
+        )
         try:
             async for db in get_db():
                 stmt = select(ProcessingJob).where(ProcessingJob.job_id == job_id)
                 result = await db.execute(stmt)
                 job = result.scalar_one()
                 job.status = 'error'
-                job.error_message = f"Unexpected error: {str(e)}"
+                job.error_message = error_msg
                 job.completed_at = datetime.utcnow()
                 await db.commit()
                 break
-        except:
-            pass
+        except Exception as db_error:
+            logger.error(f"[MOVEMENT] Job {job_id}: Failed to update job status after error: {db_error}", exc_info=True)
 
 @app.post("/process-movement")
 async def process_movement(
