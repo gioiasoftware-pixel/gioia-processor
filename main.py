@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 from database import get_db, create_tables, save_inventory_to_db, get_inventory_status, ProcessingJob, ensure_user_tables, get_user_table_name, User
 from jwt_utils import validate_viewer_token
+from viewer_generator import generate_viewer_html_from_db, store_viewer_html, get_viewer_html_from_cache
 from config import validate_config
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
@@ -822,6 +823,88 @@ async def get_inventory_snapshot(token: str = Query(...)):
             exc_info=True
         )
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+
+@app.post("/api/viewer/generate")
+async def generate_viewer(
+    telegram_id: int = Form(...),
+    business_name: str = Form(...),
+    correlation_id: str = Form(None)
+):
+    """
+    Genera HTML viewer con dati inventario embedded.
+    Estrae dati DB e genera HTML in modo sincrono, poi salva in cache.
+    """
+    import uuid
+    from viewer_generator import generate_viewer_html_from_db, store_viewer_html
+    
+    try:
+        logger.info(
+            f"[VIEWER_GENERATE] Richiesta generazione viewer per telegram_id={telegram_id}, "
+            f"business_name={business_name}, correlation_id={correlation_id}"
+        )
+        
+        # Genera view_id univoco
+        view_id = str(uuid.uuid4())
+        
+        # Estrai dati e genera HTML (sincrono)
+        async for db in get_db():
+            html = await generate_viewer_html_from_db(
+                db, telegram_id, business_name, correlation_id
+            )
+            
+            # Salva in cache
+            store_viewer_html(view_id, html)
+            
+            logger.info(
+                f"[VIEWER_GENERATE] HTML generato e salvato per view_id={view_id}, "
+                f"telegram_id={telegram_id}, correlation_id={correlation_id}, "
+                f"html_length={len(html)}"
+            )
+            break
+        
+        return {
+            "view_id": view_id,
+            "status": "completed",
+            "viewer_url": f"https://gioia-processor-production.up.railway.app/api/viewer/{view_id}"
+        }
+        
+    except Exception as e:
+        logger.error(
+            f"[VIEWER_GENERATE] Errore generazione viewer: {e}, "
+            f"telegram_id={telegram_id}, correlation_id={correlation_id}",
+            exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+
+
+
+@app.get("/api/viewer/{view_id}")
+async def get_viewer_html(view_id: str):
+    """
+    Serve HTML viewer generato dalla cache.
+    """
+    try:
+        logger.info(f"[VIEWER_GET] Richiesta HTML per view_id={view_id}")
+        
+        html, found = get_viewer_html_from_cache(view_id)
+        
+        if not found:
+            logger.warning(f"[VIEWER_GET] View ID {view_id} non trovato o scaduto")
+            raise HTTPException(status_code=404, detail="View non trovata o scaduta")
+        
+        logger.info(f"[VIEWER_GET] HTML servito per view_id={view_id}, length={len(html)}")
+        
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[VIEWER_GET] Errore servendo HTML: {e}, view_id={view_id}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
 
 @app.get("/api/inventory/export.csv")
 async def export_inventory_csv(token: str = Query(...)):
