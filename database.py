@@ -806,16 +806,6 @@ async def get_inventory_status(session, telegram_id: int):
         logger.error(f"Error getting inventory status: {e}")
         raise
 
-
-
-            "table_name": table_inventario
-        }
-        
-    except Exception as e:
-        await session.rollback()
-        logger.error(f"Error saving inventory to database: {e}")
-        raise
-
 async def get_user_inventories(session, telegram_id: int):
 
     """Ottieni inventari di un utente dalla tabella INVENTARIO"""
