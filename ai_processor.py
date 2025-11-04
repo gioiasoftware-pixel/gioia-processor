@@ -352,9 +352,3 @@ Rispondi SOLO con JSON array di TUTTI i vini validi (mantieni tutti tranne dupli
 
 # Istanza globale del processore AI
 ai_processor = AIProcessor()
-            # In caso di errore, ritorna tutti i vini originali
-            logger.warning("Returning all original wines due to validation error")
-            return wines
-
-# Istanza globale del processore AI
-ai_processor = AIProcessor()
