@@ -146,33 +146,22 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
         business_name = "Upload Manuale"
     
     try:
-        # Verifica che l'utente esista nella tabella users (necessario per FOREIGN KEY)
-        check_user = sql_text("SELECT id FROM users WHERE telegram_id = :telegram_id")
-        result_user = await session.execute(check_user, {"telegram_id": telegram_id})
-        user_row = result_user.scalar_one_or_none()
+        # Verifica e crea/aggiorna utente nella tabella users (necessario per FOREIGN KEY)
+        # Usa UPSERT atomico per evitare race conditions e semplificare la logica
+        upsert_user = sql_text("""
+            INSERT INTO users (telegram_id, business_name, created_at, updated_at)
+            VALUES (:telegram_id, :business_name, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT (telegram_id) 
+            DO UPDATE SET 
+                business_name = EXCLUDED.business_name, 
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING id
+        """)
+        result_user = await session.execute(upsert_user, {"telegram_id": telegram_id, "business_name": business_name})
+        user_id = result_user.scalar_one()
+        logger.info(f"User {telegram_id} ensured with id {user_id}, business_name: {business_name}")
         
-        if not user_row:
-            # Crea utente se non esiste
-            logger.warning(f"User {telegram_id} not found in users table, creating...")
-            create_user = sql_text("""
-                INSERT INTO users (telegram_id, business_name, created_at, updated_at)
-                VALUES (:telegram_id, :business_name, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT (telegram_id) DO UPDATE SET business_name = :business_name, updated_at = CURRENT_TIMESTAMP
-                RETURNING id
-            """)
-            result_create = await session.execute(create_user, {"telegram_id": telegram_id, "business_name": business_name})
-            user_id = result_create.scalar_one()
-            logger.info(f"Created user {telegram_id} with id {user_id}")
-        else:
-            user_id = user_row
-            # Aggiorna business_name se diverso
-            update_user = sql_text("""
-                UPDATE users SET business_name = :business_name, updated_at = CURRENT_TIMESTAMP
-                WHERE telegram_id = :telegram_id
-            """)
-            await session.execute(update_user, {"telegram_id": telegram_id, "business_name": business_name})
-        
-        # Commit della creazione/aggiornamento utente
+        # Commit della creazione/aggiornamento utente prima di creare le tabelle
         await session.commit()
         # Nomi tabelle
         table_inventario = get_user_table_name(telegram_id, business_name, "INVENTARIO")

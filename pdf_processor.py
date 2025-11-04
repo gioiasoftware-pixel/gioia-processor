@@ -247,3 +247,4 @@ async def process_pdf_with_ocr(file_content: bytes) -> List[Dict[str, Any]]:
         logger.error(f"Error processing PDF with OCR: {e}")
         raise
 
+
