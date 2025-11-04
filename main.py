@@ -1,6 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text, select
+from sqlalchemy import select
+from sqlalchemy import text as sql_text
 import uvicorn
 import os
 import asyncio
@@ -8,6 +9,7 @@ import json
 import uuid
 from datetime import datetime
 from database import get_db, create_tables, save_inventory_to_db, get_inventory_status, ProcessingJob, ensure_user_tables, get_user_table_name, User
+from jwt_utils import validate_viewer_token
 from config import validate_config
 from csv_processor import process_csv_file, process_excel_file
 from ocr_processor import process_image_ocr
@@ -691,6 +693,231 @@ async def get_status(telegram_id: int):
     except Exception as e:
         logger.error(f"Error getting status for telegram_id {telegram_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")
+
+@app.get("/api/inventory/snapshot")
+async def get_inventory_snapshot(token: str = Query(...)):
+    """
+    Endpoint per viewer: restituisce snapshot inventario con facets per filtri.
+    Richiede token JWT valido come query parameter.
+    """
+    try:
+        # Valida token JWT
+        token_data = validate_viewer_token(token)
+        if not token_data:
+            raise HTTPException(status_code=401, detail="Token scaduto o non valido")
+        
+        telegram_id = token_data["telegram_id"]
+        business_name = token_data["business_name"]
+        
+        logger.info(f"Snapshot richiesto per {telegram_id}/{business_name}")
+        
+        async for db in get_db():
+            # Verifica che utente esista
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail="Utente non trovato")
+            
+            # Assicura che tabelle esistano
+            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            table_inventario = user_tables["inventario"]
+            
+            # Recupera tutti i vini
+            query_wines = sql_text(f"""
+                SELECT 
+                    name,
+                    producer,
+                    vintage,
+                    quantity,
+                    selling_price,
+                    wine_type,
+                    min_quantity,
+                    updated_at
+                FROM {table_inventario}
+                WHERE user_id = :user_id
+                ORDER BY name, vintage
+            """)
+            
+            result = await db.execute(query_wines, {"user_id": user.id})
+            wines_rows = result.fetchall()
+            
+            # Formatta vini per risposta
+            rows = []
+            for wine in wines_rows:
+                rows.append({
+                    "name": wine.name or "-",
+                    "winery": wine.producer or "-",
+                    "vintage": wine.vintage,
+                    "qty": wine.quantity or 0,
+                    "price": float(wine.selling_price) if wine.selling_price else 0.0,
+                    "type": wine.wine_type or "Altro",
+                    "critical": wine.quantity is not None and wine.min_quantity is not None and wine.quantity <= wine.min_quantity
+                })
+            
+            # Calcola facets (aggregazioni per filtri)
+            facets = {
+                "type": {},
+                "vintage": {},
+                "winery": {}
+            }
+            
+            for wine in wines_rows:
+                # Tipo
+                wine_type = wine.wine_type or "Altro"
+                facets["type"][wine_type] = facets["type"].get(wine_type, 0) + 1
+                
+                # Annata
+                if wine.vintage:
+                    vintage_str = str(wine.vintage)
+                    facets["vintage"][vintage_str] = facets["vintage"].get(vintage_str, 0) + 1
+                
+                # Cantina (producer)
+                if wine.producer:
+                    facets["winery"][wine.producer] = facets["winery"].get(wine.producer, 0) + 1
+            
+            # Meta info
+            last_update = None
+            if wines_rows:
+                # Trova ultimo updated_at
+                last_update_row = max(wines_rows, key=lambda w: w.updated_at if w.updated_at else datetime.min)
+                last_update = last_update_row.updated_at.isoformat() if last_update_row.updated_at else datetime.utcnow().isoformat()
+            else:
+                last_update = datetime.utcnow().isoformat()
+            
+            response = {
+                "rows": rows,
+                "facets": facets,
+                "meta": {
+                    "total_rows": len(rows),
+                    "last_update": last_update
+                }
+            }
+            
+            logger.info(f"Snapshot restituito: {len(rows)} vini per {telegram_id}/{business_name}")
+            return response
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Errore snapshot inventario: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+@app.get("/api/inventory/export.csv")
+async def export_inventory_csv(token: str = Query(...)):
+    """
+    Endpoint per viewer: export CSV inventario.
+    Richiede token JWT valido come query parameter.
+    """
+    from fastapi.responses import Response
+    import csv
+    import io
+    
+    try:
+        # Valida token JWT
+        token_data = validate_viewer_token(token)
+        if not token_data:
+            raise HTTPException(status_code=401, detail="Token scaduto o non valido")
+        
+        telegram_id = token_data["telegram_id"]
+        business_name = token_data["business_name"]
+        
+        logger.info(f"Export CSV richiesto per {telegram_id}/{business_name}")
+        
+        async for db in get_db():
+            # Verifica che utente esista
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail="Utente non trovato")
+            
+            # Assicura che tabelle esistano
+            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            table_inventario = user_tables["inventario"]
+            
+            # Recupera tutti i vini
+            query_wines = sql_text(f"""
+                SELECT 
+                    name,
+                    producer,
+                    vintage,
+                    quantity,
+                    selling_price,
+                    wine_type,
+                    region,
+                    country,
+                    grape_variety,
+                    alcohol_content,
+                    cost_price,
+                    description,
+                    notes
+                FROM {table_inventario}
+                WHERE user_id = :user_id
+                ORDER BY name, vintage
+            """)
+            
+            result = await db.execute(query_wines, {"user_id": user.id})
+            wines_rows = result.fetchall()
+            
+            # Genera CSV
+            output = io.StringIO()
+            writer = csv.writer(output)
+            
+            # Header
+            writer.writerow([
+                "Nome",
+                "Cantina",
+                "Annata",
+                "Quantità",
+                "Prezzo (€)",
+                "Tipo",
+                "Regione",
+                "Paese",
+                "Vitigno",
+                "Gradazione (%vol)",
+                "Costo acquisto (€)",
+                "Descrizione",
+                "Note"
+            ])
+            
+            # Righe dati
+            for wine in wines_rows:
+                writer.writerow([
+                    wine.name or "",
+                    wine.producer or "",
+                    wine.vintage or "",
+                    wine.quantity or 0,
+                    f"{wine.selling_price:.2f}" if wine.selling_price else "",
+                    wine.wine_type or "",
+                    wine.region or "",
+                    wine.country or "",
+                    wine.grape_variety or "",
+                    f"{wine.alcohol_content:.1f}" if wine.alcohol_content else "",
+                    f"{wine.cost_price:.2f}" if wine.cost_price else "",
+                    wine.description or "",
+                    wine.notes or ""
+                ])
+            
+            csv_content = output.getvalue()
+            
+            logger.info(f"CSV generato: {len(wines_rows)} vini per {telegram_id}/{business_name}")
+            
+            return Response(
+                content=csv_content,
+                media_type="text/csv;charset=utf-8",
+                headers={
+                    "Content-Disposition": f'attachment; filename="inventario_{telegram_id}_{business_name.replace(" ", "_")}.csv"'
+                }
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Errore export CSV: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 async def process_movement_background(
     job_id: str,
