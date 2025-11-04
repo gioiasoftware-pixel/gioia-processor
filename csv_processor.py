@@ -682,3 +682,215 @@ def filter_italian_wines(wines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     # Ora accetta tutti i vini, non solo quelli italiani
     return wines
+
+        
+        # Controlla colonne duplicate dopo mapping
+        if len(df.columns) != len(set(df.columns)):
+            duplicates = [col for col in df.columns if list(df.columns).count(col) > 1]
+            logger.warning(f"ATTENZIONE: Colonne duplicate dopo mapping: {set(duplicates)}")
+            # Rimuovi duplicati mantenendo la prima occorrenza
+            df = df.loc[:, ~df.columns.duplicated()]
+            logger.info(f"Colonne dopo rimozione duplicati: {list(df.columns)}")
+        
+        wines_data = []
+        
+        for index, row in df.iterrows():
+            try:
+                wine_data = extract_wine_data_from_row(row)
+                if wine_data and wine_data.get('name'):
+                    wines_data.append(wine_data)
+                else:
+                    logger.debug(f"Row {index} skipped: wine_data={wine_data}, has_name={wine_data.get('name') if wine_data else False}")
+            except Exception as e:
+                logger.warning(f"Error processing row {index}: {e}", exc_info=True)
+                continue
+        
+        # Deduplica se richiesto
+        if deduplicate and wines_data:
+            wines_data, dedup_stats = deduplicate_wines(wines_data, merge_quantities=True)
+            processing_info['deduplication'] = dedup_stats
+        
+        # Usa AI per validare e filtrare vini (batch, costo ridotto)
+        validated_wines = await ai_processor.validate_wine_data(wines_data)
+        
+        # Filtra vini (ora accetta tutti i vini)
+        filtered_wines = filter_italian_wines(validated_wines)
+        
+        confidence = ai_analysis.get('confidence', 0.9) if ai_analysis else 0.9  # 0.9 se usato solo smart mapping
+        processing_info['confidence'] = confidence
+        processing_info['total_extracted'] = len(filtered_wines)
+        
+        logger.info(f"Processed {len(filtered_wines)} wines from Excel (confidence: {confidence})")
+        return filtered_wines, processing_info
+        
+    except Exception as e:
+        logger.error(f"Error processing Excel file: {e}")
+        raise
+
+def extract_wine_data_from_row(row: pd.Series) -> Dict[str, Any]:
+    """
+    Estrae dati vino da una riga del DataFrame.
+    Estrae TUTTI i campi dello schema database per garantire scalabilità.
+    """
+    wine_data = {}
+    
+    # Nome vino (obbligatorio)
+    if 'name' in row and pd.notna(row['name']):
+        wine_data['name'] = str(row['name']).strip()
+    
+    # Annata (vintage)
+    if 'vintage' in row and pd.notna(row['vintage']):
+        vintage = str(row['vintage']).strip()
+        vintage_match = re.search(r'\b(19|20)\d{2}\b', vintage)
+        if vintage_match:
+            wine_data['vintage'] = int(vintage_match.group())
+    
+    # Produttore
+    if 'producer' in row and pd.notna(row['producer']):
+        wine_data['producer'] = str(row['producer']).strip()
+    
+    # Fornitore (supplier)
+    if 'supplier' in row and pd.notna(row['supplier']):
+        wine_data['supplier'] = str(row['supplier']).strip()
+    
+    # Uvaggio/Vitigno (grape_variety)
+    if 'grape_variety' in row and pd.notna(row['grape_variety']):
+        wine_data['grape_variety'] = str(row['grape_variety']).strip()
+    
+    # Regione
+    if 'region' in row and pd.notna(row['region']):
+        wine_data['region'] = str(row['region']).strip()
+    
+    # Paese (country)
+    if 'country' in row and pd.notna(row['country']):
+        wine_data['country'] = str(row['country']).strip()
+    
+    # Tipo vino (wine_type)
+    if 'wine_type' in row and pd.notna(row['wine_type']):
+        wine_type = str(row['wine_type']).lower().strip()
+        wine_data['wine_type'] = classify_wine_type(wine_type)
+    else:
+        # Prova a classificare dal nome
+        if 'name' in wine_data:
+            wine_data['wine_type'] = classify_wine_type(wine_data['name'])
+        else:
+            wine_data['wine_type'] = 'sconosciuto'
+    
+    # Classificazione (DOC, DOCG, IGT, etc.)
+    if 'classification' in row and pd.notna(row['classification']):
+        wine_data['classification'] = str(row['classification']).strip().upper()
+    
+    # Quantità
+    if 'quantity' in row and pd.notna(row['quantity']):
+        try:
+            qty_str = str(row['quantity']).strip()
+            qty_match = re.search(r'\d+', qty_str)
+            if qty_match:
+                wine_data['quantity'] = int(qty_match.group())
+            else:
+                wine_data['quantity'] = 1
+        except (ValueError, TypeError):
+            wine_data['quantity'] = 1
+    else:
+        wine_data['quantity'] = 1
+    
+    # Scorta minima (min_quantity)
+    if 'min_quantity' in row and pd.notna(row['min_quantity']):
+        try:
+            min_qty_str = str(row['min_quantity']).strip()
+            min_qty_match = re.search(r'\d+', min_qty_str)
+            if min_qty_match:
+                wine_data['min_quantity'] = int(min_qty_match.group())
+            else:
+                wine_data['min_quantity'] = 0
+        except (ValueError, TypeError):
+            wine_data['min_quantity'] = 0
+    else:
+        wine_data['min_quantity'] = 0
+    
+    # Prezzo di acquisto (cost_price)
+    if 'cost_price' in row and pd.notna(row['cost_price']):
+        try:
+            cost_str = str(row['cost_price']).replace(',', '.').replace('€', '').strip()
+            cost_clean = re.sub(r'[^\d.,]', '', cost_str)
+            if cost_clean:
+                wine_data['cost_price'] = float(cost_clean.replace(',', '.'))
+        except (ValueError, TypeError):
+            pass
+    
+    # Prezzo di vendita (selling_price)
+    # Controlla prima selling_price, poi price (compatibilità)
+    if 'selling_price' in row and pd.notna(row['selling_price']):
+        try:
+            price_str = str(row['selling_price']).replace(',', '.').replace('€', '').strip()
+            price_clean = re.sub(r'[^\d.,]', '', price_str)
+            if price_clean:
+                wine_data['selling_price'] = float(price_clean.replace(',', '.'))
+        except (ValueError, TypeError):
+            pass
+    elif 'price' in row and pd.notna(row['price']):
+        # Fallback: se c'è solo 'price', usa come selling_price
+        try:
+            price_str = str(row['price']).replace(',', '.').replace('€', '').strip()
+            price_clean = re.sub(r'[^\d.,]', '', price_str)
+            if price_clean:
+                wine_data['selling_price'] = float(price_clean.replace(',', '.'))
+        except (ValueError, TypeError):
+            pass
+    
+    # Gradazione alcolica (alcohol_content)
+    if 'alcohol_content' in row and pd.notna(row['alcohol_content']):
+        try:
+            alc_str = str(row['alcohol_content']).replace('%', '').replace('vol', '').strip()
+            alc_clean = re.sub(r'[^\d.,]', '', alc_str)
+            if alc_clean:
+                wine_data['alcohol_content'] = float(alc_clean.replace(',', '.'))
+        except (ValueError, TypeError):
+            pass
+    
+    # Descrizione
+    if 'description' in row and pd.notna(row['description']):
+        wine_data['description'] = str(row['description']).strip()
+    
+    # Note
+    if 'notes' in row and pd.notna(row['notes']):
+        wine_data['notes'] = str(row['notes']).strip()
+    
+    return wine_data
+
+def classify_wine_type(text: str) -> str:
+    """
+    Classifica il tipo di vino dal testo
+    """
+    text_lower = text.lower()
+    
+    if any(word in text_lower for word in ['rosso', 'red', 'nero', 'black', 'sangiovese', 'barbera', 'nebbiolo', 'cabernet', 'merlot', 'pinot noir', 'syrah', 'shiraz']):
+        return 'rosso'
+    elif any(word in text_lower for word in ['bianco', 'white', 'chardonnay', 'pinot grigio', 'sauvignon', 'riesling', 'gewürztraminer', 'moscato']):
+        return 'bianco'
+    elif any(word in text_lower for word in ['rosato', 'rosé', 'rose', 'pink']):
+        return 'rosato'
+    elif any(word in text_lower for word in ['spumante', 'champagne', 'prosecco', 'moscato', 'frizzante', 'sparkling', 'cava', 'crémant']):
+        return 'spumante'
+    else:
+        return 'sconosciuto'
+
+def clean_wine_name(name: str) -> str:
+    """
+    Pulisce il nome del vino
+    """
+    if not name:
+        return ""
+    
+    # Rimuovi caratteri speciali eccessivi
+    cleaned = re.sub(r'[^\w\s\-\.]', ' ', name)
+    # Rimuovi spazi multipli
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    return cleaned.strip()
+
+def filter_italian_wines(wines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Filtra vini per mantenere solo quelli italiani (funzione rimossa - ora accetta tutti i vini)
+    """
+    # Ora accetta tutti i vini, non solo quelli italiani
+    return wines
