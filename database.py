@@ -146,6 +146,34 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
         business_name = "Upload Manuale"
     
     try:
+        # Verifica che l'utente esista nella tabella users (necessario per FOREIGN KEY)
+        check_user = sql_text("SELECT id FROM users WHERE telegram_id = :telegram_id")
+        result_user = await session.execute(check_user, {"telegram_id": telegram_id})
+        user_row = result_user.scalar_one_or_none()
+        
+        if not user_row:
+            # Crea utente se non esiste
+            logger.warning(f"User {telegram_id} not found in users table, creating...")
+            create_user = sql_text("""
+                INSERT INTO users (telegram_id, business_name, created_at, updated_at)
+                VALUES (:telegram_id, :business_name, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (telegram_id) DO UPDATE SET business_name = :business_name, updated_at = CURRENT_TIMESTAMP
+                RETURNING id
+            """)
+            result_create = await session.execute(create_user, {"telegram_id": telegram_id, "business_name": business_name})
+            user_id = result_create.scalar_one()
+            logger.info(f"Created user {telegram_id} with id {user_id}")
+        else:
+            user_id = user_row
+            # Aggiorna business_name se diverso
+            update_user = sql_text("""
+                UPDATE users SET business_name = :business_name, updated_at = CURRENT_TIMESTAMP
+                WHERE telegram_id = :telegram_id
+            """)
+            await session.execute(update_user, {"telegram_id": telegram_id, "business_name": business_name})
+        
+        # Commit della creazione/aggiornamento utente
+        await session.commit()
         # Nomi tabelle
         table_inventario = get_user_table_name(telegram_id, business_name, "INVENTARIO")
         table_backup = get_user_table_name(telegram_id, business_name, "INVENTARIO backup")
@@ -234,7 +262,7 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
             """)
             await session.execute(create_consumi)
             
-            await session.commit()
+            # Non facciamo commit qui - lo farà il chiamante
             logger.info(f"Created tables for {telegram_id}/{business_name}: INVENTARIO, INVENTARIO backup, LOG interazione, Consumi e rifornimenti")
         else:
             # Tabella esiste già - verifica se ha colonna supplier e aggiungila se manca
@@ -253,11 +281,11 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
                     # Aggiungi colonna supplier alle tabelle esistenti
                     alter_table = sql_text(f"ALTER TABLE {table_inventario} ADD COLUMN IF NOT EXISTS supplier VARCHAR(200)")
                     await session.execute(alter_table)
-                    await session.commit()
+                    # Non facciamo commit qui - lo farà il chiamante
                     logger.info(f"Added supplier column to existing table {table_inventario}")
             except Exception as e:
                 logger.warning(f"Error checking/adding supplier column for {table_inventario}: {e}")
-                await session.rollback()
+                # Non facciamo rollback qui - lo gestirà il chiamante
             
             logger.info(f"Tables already exist for {telegram_id}/{business_name}")
         

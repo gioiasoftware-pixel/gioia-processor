@@ -606,15 +606,31 @@ async def create_user_tables(telegram_id: int = Form(...), business_name: str = 
     Chiamato dal bot quando l'utente completa l'onboarding.
     """
     try:
+        logger.info(f"Creating tables for telegram_id {telegram_id}, business_name: {business_name}")
+        
         async for db in get_db():
-            tables = await ensure_user_tables(db, telegram_id, business_name)
-            return {
-                "status": "success",
-                "message": f"Tabelle create per {telegram_id}/{business_name}",
-                "tables": tables
-            }
+            try:
+                # Crea le tabelle
+                tables = await ensure_user_tables(db, telegram_id, business_name)
+                
+                # Commit esplicito per assicurare che le modifiche siano salvate
+                await db.commit()
+                
+                logger.info(f"Tables created successfully for {telegram_id}/{business_name}")
+                return {
+                    "status": "success",
+                    "message": f"Tabelle create per {telegram_id}/{business_name}",
+                    "tables": tables
+                }
+            except Exception as db_error:
+                # Rollback in caso di errore
+                await db.rollback()
+                logger.error(f"Database error creating tables for telegram_id {telegram_id}: {db_error}")
+                raise
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error creating tables for telegram_id {telegram_id}: {e}")
+        logger.error(f"Error creating tables for telegram_id {telegram_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error creating tables: {str(e)}")
 
 @app.delete("/tables/{telegram_id}")
