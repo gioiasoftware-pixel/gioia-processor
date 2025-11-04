@@ -19,3 +19,9 @@ pyjwt>=2.8.0
 
 colorlog>=6.8.0
 pyjwt>=2.8.0
+
+colorlog>=6.8.0
+pyjwt>=2.8.0
+
+colorlog>=6.8.0
+pyjwt>=2.8.0

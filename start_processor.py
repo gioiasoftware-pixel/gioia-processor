@@ -42,3 +42,5 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Failed to start server: {e}")
         raise
+        logger.error(f"Failed to start server: {e}")
+        raise

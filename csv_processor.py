@@ -315,8 +315,8 @@ async def process_csv_file(file_content: bytes, separator: Optional[str] = None,
             ai_mapping = ai_analysis.get('column_mapping', {})
         elif not quantity_mapped:  # Se quantity non è stata mappata, usa AI per trovarla
             logger.warning("Colonna 'quantity' non riconosciuta dal mapping intelligente, usando AI per identificarla")
-            csv_text = df.to_string()
-            ai_analysis = await ai_processor.analyze_csv_structure(csv_text)
+        csv_text = df.to_string()
+        ai_analysis = await ai_processor.analyze_csv_structure(csv_text)
             ai_mapping = ai_analysis.get('column_mapping', {})
             # Verifica che l'AI abbia trovato quantity
             if 'quantity' in ai_mapping:
@@ -335,7 +335,7 @@ async def process_csv_file(file_content: bytes, separator: Optional[str] = None,
                 # Cerca colonna originale (case-sensitive prima)
                 if original_col_name in original_columns:
                     rename_mapping[original_col_name] = standard_name
-                else:
+        else:
                     # Fallback case-insensitive
                     for orig_col in original_columns:
                         if normalize_column_name(orig_col) == normalize_column_name(original_col_name):
@@ -434,8 +434,8 @@ async def process_excel_file(file_content: bytes, deduplicate: bool = True) -> T
             ai_mapping = ai_analysis.get('column_mapping', {})
         elif not quantity_mapped:  # Se quantity non è stata mappata, usa AI per trovarla
             logger.warning("Colonna 'quantity' non riconosciuta dal mapping intelligente, usando AI per identificarla")
-            excel_text = df.to_string()
-            ai_analysis = await ai_processor.analyze_csv_structure(excel_text)
+        excel_text = df.to_string()
+        ai_analysis = await ai_processor.analyze_csv_structure(excel_text)
             ai_mapping = ai_analysis.get('column_mapping', {})
             # Verifica che l'AI abbia trovato quantity
             if 'quantity' in ai_mapping:
@@ -454,7 +454,7 @@ async def process_excel_file(file_content: bytes, deduplicate: bool = True) -> T
                 # Cerca colonna originale (case-sensitive prima)
                 if original_col_name in original_columns:
                     rename_mapping[original_col_name] = standard_name
-                else:
+        else:
                     # Fallback case-insensitive
                     for orig_col in original_columns:
                         if normalize_column_name(orig_col) == normalize_column_name(original_col_name):
