@@ -2,6 +2,7 @@
 Helper per scrivere notifiche admin nella tabella admin_notifications
 """
 import os
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -70,11 +71,14 @@ async def enqueue_admin_notification(
         
         notification_id = str(uuid.uuid4())
         
+        # Serializza payload come JSON string per asyncpg
+        payload_json = json.dumps(payload) if isinstance(payload, dict) else payload
+        
         async with pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO admin_notifications 
                 (id, created_at, status, event_type, telegram_id, correlation_id, payload, retry_count, next_attempt_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
             """,
                 notification_id,
                 datetime.utcnow(),
@@ -82,7 +86,7 @@ async def enqueue_admin_notification(
                 event_type,
                 telegram_id,
                 correlation_id,
-                payload,
+                payload_json,
                 0,
                 datetime.utcnow()
             )
