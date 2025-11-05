@@ -71,7 +71,7 @@ async def process_movement_background(
 
             # Recupera vino per nome (case-insensitive match semplice)
             find_wine = sql_text(f"""
-                SELECT id, name, quantity 
+                SELECT id, name, producer, quantity 
                 FROM {table_inventario}
                 WHERE user_id = :user_id AND LOWER(name) = LOWER(:wine_name)
                 ORDER BY id
@@ -89,7 +89,11 @@ async def process_movement_background(
                 await db.commit()
                 return
 
-            quantity_before = wine_row.quantity or 0
+            # Accedi ai campi tramite chiavi (Row object)
+            wine_id = wine_row[0]  # id
+            wine_name_db = wine_row[1]  # name
+            wine_producer = wine_row[2] if len(wine_row) > 2 else None  # producer
+            quantity_before = wine_row[3] if len(wine_row) > 3 else 0  # quantity
 
             try:
                 if movement_type == 'consumo':
@@ -108,7 +112,7 @@ async def process_movement_background(
                         SET quantity = COALESCE(quantity, 0) - :q, updated_at = CURRENT_TIMESTAMP
                         WHERE id = :id
                     """)
-                    await db.execute(update_inv, {"q": quantity, "id": wine_row.id})
+                    await db.execute(update_inv, {"q": quantity, "id": wine_id})
 
                 elif movement_type == 'rifornimento':
                     # Aggiorna inventario (incremento)
@@ -117,28 +121,31 @@ async def process_movement_background(
                         SET quantity = COALESCE(quantity, 0) + :q, updated_at = CURRENT_TIMESTAMP
                         WHERE id = :id
                     """)
-                    await db.execute(update_inv, {"q": quantity, "id": wine_row.id})
+                    await db.execute(update_inv, {"q": quantity, "id": wine_id})
                 else:
                     raise ValueError("movement_type deve essere 'consumo' o 'rifornimento'")
 
-                # Inserisci log movimento
+                # Ricalcola quantità dopo (prima dell'insert per avere il valore corretto)
+                res2 = await db.execute(sql_text(f"SELECT quantity FROM {table_inventario} WHERE id=:id"), {"id": wine_id})
+                quantity_after = res2.scalar() or 0
+
+                # Inserisci log movimento con schema corretto della tabella
                 insert_mov = sql_text(f"""
                     INSERT INTO {table_consumi}
-                        (user_id, wine_id, movement_type, quantity, created_at)
-                    VALUES (:user_id, :wine_id, :movement_type, :quantity, CURRENT_TIMESTAMP)
+                        (user_id, wine_name, wine_producer, movement_type, quantity_change, quantity_before, quantity_after, movement_date)
+                    VALUES (:user_id, :wine_name, :wine_producer, :movement_type, :quantity_change, :quantity_before, :quantity_after, CURRENT_TIMESTAMP)
                 """)
                 await db.execute(insert_mov, {
                     "user_id": user.id,
-                    "wine_id": wine_row.id,
+                    "wine_name": wine_name_db,
+                    "wine_producer": wine_producer,
                     "movement_type": movement_type,
-                    "quantity": quantity
+                    "quantity_change": quantity if movement_type == 'rifornimento' else -quantity,  # Positivo per rifornimento, negativo per consumo
+                    "quantity_before": quantity_before,
+                    "quantity_after": quantity_after
                 })
 
                 await db.commit()
-
-                # Ricalcola quantità dopo
-                res2 = await db.execute(sql_text(f"SELECT quantity FROM {table_inventario} WHERE id=:id"), {"id": wine_row.id})
-                quantity_after = res2.scalar() or 0
 
             except Exception as te:
                 await db.rollback()
@@ -154,7 +161,7 @@ async def process_movement_background(
             result_data = {
                 "status": "success",
                 "movement_type": movement_type,
-                "wine_name": wine_row.name,
+                "wine_name": wine_name_db,
                 "quantity": quantity,
                 "quantity_before": quantity_before,
                 "quantity_after": quantity_after,
@@ -170,7 +177,7 @@ async def process_movement_background(
 
             log_with_context(
                 "info",
-                f"[MOVEMENT] Job {job_id}: Movement processed successfully - {movement_type} {quantity} {wine_row.name}",
+                f"[MOVEMENT] Job {job_id}: Movement processed successfully - {movement_type} {quantity} {wine_name_db}",
                 telegram_id=telegram_id
             )
             break
@@ -257,3 +264,4 @@ async def process_movement(
     except Exception as e:
         logger.error(f"Error creating movement job: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
