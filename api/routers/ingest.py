@@ -109,9 +109,10 @@ async def process_inventory_background(
                     f"(stage: {stage_used}, decision: {decision})"
                 )
                 
-                # Aggiorna progress
+                # Aggiorna progress (mantieni status='processing')
                 await update_job_status(
                     db, job_id,
+                    status='processing',  # Mantieni status processing
                     total_wines=len(wines_data),
                     processed_wines=len(wines_data),
                     processing_method=processing_method
