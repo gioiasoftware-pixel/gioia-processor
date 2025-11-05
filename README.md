@@ -1,456 +1,273 @@
-# 🍷 Gioia System - Bot Telegram + Processor AI
+# 🍷 Gioia Processor - AI Microservice v2.0.0
 
 ## 📋 Panoramica
 
-**Gioia System** è un sistema completo composto da:
-- **Telegram Bot** - Interfaccia utente per gestione inventari vini
-- **AI Processor** - Microservizio FastAPI per elaborazione intelligente file inventari
+**Gioia Processor** è un microservizio FastAPI per elaborazione intelligente di file inventari vini con pipeline deterministica multi-stage.
 
-Il sistema gestisce parsing di file CSV/Excel e riconoscimento OCR da immagini per estrarre dati sui vini con AI GPT-4.
+**Versione**: 2.0.0 (Refactored)  
+**Architettura**: Modulare (`api/`, `core/`, `ingest/`)  
+**Pipeline**: 5 stage deterministica (Gate → Parse → IA Mirata → LLM Mode → OCR)
 
 ## 🚀 Funzionalità
 
-### **File Processing**
-- **CSV**: Parsing file CSV con AI GPT-4 per riconoscimento intelligente colonne
-- **Excel**: Supporto file Excel (.xlsx, .xls) con AI enhancement
-- **OCR**: Riconoscimento testo da immagini con Tesseract + AI GPT-4
-- **AI Enhancement**: Miglioramento automatico dati vini con OpenAI GPT-4
+### **Pipeline Processing**
+- **Stage 0 (Gate)**: Routing automatico file per tipo
+- **Stage 1 (Parse Classico)**: Parsing CSV/Excel con encoding detection, normalization, validation
+- **Stage 2 (IA Mirata)**: Disambiguazione header e correzione righe ambigue con `gpt-4o-mini`
+- **Stage 3 (LLM Mode)**: Estrazione da testo grezzo con `gpt-4o` (solo se necessario)
+- **Stage 4 (OCR)**: Estrazione testo da immagini/PDF con Tesseract + Stage 3
 
 ### **API Endpoints**
+- `POST /process-inventory` - Elabora file inventario (nuova pipeline)
+- `POST /process-movement` - Processa movimento inventario (consumo/rifornimento)
+- `GET /status/{job_id}` - Stato elaborazione job
 - `GET /health` - Health check del servizio
-- `POST /process-inventory` - Elabora file inventario
-- `GET /status/{telegram_id}` - Stato elaborazione utente
-- `GET /ai/status` - Stato AI processor
-- `POST /ai/test` - Test elaborazione AI
+- `GET /api/inventory/snapshot` - Snapshot inventario con facets
+- `GET /api/viewer/{view_id}` - HTML viewer inventario
 
-### **Database Integration**
-- Connessione PostgreSQL con SQLAlchemy
-- Modelli per inventari e vini
-- Gestione transazioni e backup
+### **Database**
+- PostgreSQL con SQLAlchemy async
+- Tabelle dinamiche per utente (`inventario_{telegram_id}`, `consumi_{telegram_id}`)
+- Batch insert ottimizzato
+- Job management con idempotency
 
-## 📁 Struttura Sistema Completo
+## 📁 Struttura Progetto
 
 ```
-gioia-system/
-├── telegram-bot/              # Bot Telegram
-│   ├── main.py               # Bot principale
-│   ├── handlers/             # Gestori comandi
-│   ├── utils/                # Utility bot
-│   └── requirements.txt       # Dipendenze bot
+gioia-processor/
+├── api/                      # FastAPI application
+│   ├── main.py              # FastAPI app principale
+│   └── routers/             # API routers
+│       ├── ingest.py        # POST /process-inventory
+│       ├── movements.py     # POST /process-movement
+│       └── snapshot.py      # GET /api/inventory/snapshot, /api/viewer/*
 │
-├── gioia-processor/          # AI Processor
-│   ├── main.py               # FastAPI application
-│   ├── ai_processor.py       # AI GPT-4 integration
-│   ├── csv_processor.py      # Logica parsing CSV/Excel
-│   ├── ocr_processor.py      # Logica OCR immagini
-│   ├── database.py           # Connessione e modelli DB
-│   ├── requirements.txt      # Dipendenze processor
-│   ├── start_processor.py    # Script avvio servizio
-│   ├── test_processor.py     # Test automatici
-│   ├── Procfile              # Configurazione deploy Railway
-│   ├── railway.json          # Config Railway
-│   └── README.md             # Documentazione processor
+├── core/                     # Moduli core
+│   ├── config.py            # Configurazione (pydantic-settings)
+│   ├── database.py          # Database interactions
+│   ├── job_manager.py       # Job management
+│   ├── logger.py            # Logging unificato (JSON)
+│   └── alerting.py          # Sistema alerting
 │
-└── README.md                 # Documentazione sistema completo
+├── ingest/                   # Pipeline processing
+│   ├── gate.py              # Stage 0: Routing
+│   ├── parser.py            # Stage 1: Parse classico
+│   ├── llm_targeted.py      # Stage 2: IA mirata
+│   ├── llm_extract.py       # Stage 3: LLM mode
+│   ├── ocr_extract.py       # Stage 4: OCR
+│   ├── pipeline.py          # Orchestratore principale
+│   ├── validation.py        # Pydantic validation
+│   ├── normalization.py     # Normalization functions
+│   ├── csv_parser.py        # CSV parsing
+│   └── excel_parser.py     # Excel parsing
+│
+├── tests/                    # Test suite (~70+ test)
+│   ├── test_*.py            # Test unitari e integration
+│   └── data/                # Test fixtures
+│
+├── report/                   # Documentazione e verifiche
+│   ├── VERIFICA_COMPLETA.md
+│   ├── DOCUMENTAZIONE_COMPLETA.md
+│   └── ...
+│
+├── admin_notifications.py    # Admin notifications
+├── viewer_generator.py        # Viewer HTML generation
+├── jwt_utils.py             # JWT validation
+├── start_processor.py       # Entry point
+└── README.md                # Questo file
 ```
 
-## 🔧 Installazione e Deploy Sistema Completo
+## 🔧 Installazione e Setup
 
-### **1. Setup Locale - Sistema Completo**
+### **1. Setup Locale**
 ```bash
-# Clona o organizza la struttura
-mkdir gioia-system
-cd gioia-system
-
-# Setup Bot Telegram
-cd telegram-bot
+# Installa dipendenze
 pip install -r requirements.txt
-export TELEGRAM_BOT_TOKEN="your_bot_token"
-export PROCESSOR_URL="http://localhost:8001"
-python main.py
 
-# Setup AI Processor (in un altro terminale)
-cd ../gioia-processor
-pip install -r requirements.txt
+# Configura variabili ambiente
 export DATABASE_URL="postgresql://user:pass@host:port/db"
 export OPENAI_API_KEY="your_openai_key"
 export PORT=8001
 
-# Test sistema completo
-python test_processor.py
-
-# Avvia processor
+# Avvia server
 python start_processor.py
+
+# Oppure con uvicorn
+uvicorn api.main:app --reload --port 8001
 ```
 
-### **2. Deploy Sistema Completo**
-
-#### **STEP 1: Repository GitHub**
+### **2. Test**
 ```bash
-# 1. Crea repository GitHub per il sistema completo
-# Vai su GitHub.com → New Repository
-# Nome: gioia-system
-# Descrizione: Sistema completo Gioia - Bot Telegram + AI Processor
-# Pubblica come pubblico
+# Esegui tutti i test
+pytest tests/
 
-# 2. Organizza struttura locale
-mkdir gioia-system
-cd gioia-system
+# Test con coverage
+pytest tests/ --cov=ingest --cov=core --cov=api
 
-# 3. Copia bot Telegram nella cartella
-cp -r /path/to/telegram-bot ./telegram-bot
+# Test specifici
+pytest tests/test_parsers.py
+pytest tests/test_ingest_flow.py
+```
 
-# 4. Copia processor nella cartella
-cp -r /path/to/gioia-processor ./gioia-processor
+## 🚀 Deploy Railway
 
-# 5. Commit e push sistema completo
-git init
+### **1. Repository GitHub**
+```bash
+# Commit e push
 git add .
-git commit -m "Initial commit: Gioia System - Bot + AI Processor"
-git remote add origin https://github.com/tuo-username/gioia-system.git
-git push -u origin main
+git commit -m "Refactor processor v2.0.0"
+git push origin main
 ```
 
-#### **STEP 2: Deploy Processor su Railway**
-1. **Vai su Railway.app** e fai login
-2. **Clicca "New Project"**
-3. **Seleziona "Deploy from GitHub repo"**
-4. **Connetti il repository `gioia-system`**
-5. **Seleziona cartella `gioia-processor`** per il deploy
-6. **Railway rileva automaticamente** il progetto Python
+### **2. Deploy su Railway**
+1. Vai su Railway.app → New Project
+2. Deploy from GitHub repo
+3. Seleziona repository e cartella `gioia-processor`
+4. Railway rileva automaticamente Python
 
-#### **STEP 3: Configurazione Variabili Ambiente**
-Nel dashboard Railway del progetto processor:
-
+### **3. Variabili Ambiente**
+Configura in Railway dashboard:
 ```env
-# Variabili obbligatorie
 DATABASE_URL=postgresql://user:pass@host:port/db
-PORT=8001
-
-# Variabili AI (opzionali ma consigliate)
 OPENAI_API_KEY=your_openai_api_key
-
-# Variabili opzionali
-PYTHON_VERSION=3.11
-ENVIRONMENT=production
+PORT=8001  # Railway auto-configura
 ```
 
-#### **STEP 4: Deploy Bot Telegram**
-Per il bot Telegram, puoi usare:
-- **Railway** (come il processor)
-- **Heroku** 
-- **Render**
-- **VPS** dedicato
-- **Locale** con ngrok per testing
-
-**Come ottenere DATABASE_URL:**
-1. **Crea database PostgreSQL** su Railway
-2. **Clicca sul database** → Settings → Connect
-3. **Copia la stringa di connessione** completa
-4. **Incolla in DATABASE_URL**
-
-#### **STEP 4: Configurazione Deploy**
-Railway dovrebbe rilevare automaticamente:
-- **Build Command**: `pip install -r requirements.txt`
-- **Start Command**: `python start_processor.py`
-- **Port**: 8001
-
-#### **STEP 5: Verifica Deploy**
-1. **Attendi deploy completato** (2-3 minuti)
-2. **Clicca sul dominio** generato da Railway
-3. **Testa endpoint**: `https://your-app.railway.app/health`
-4. **Dovrebbe restituire**: `{"status": "healthy", "service": "gioia-processor"}`
-
-#### **STEP 6: Test Completo**
-```bash
-# Test con script automatico
-python test_processor.py
-
-# Test manuale
-curl https://your-app.railway.app/health
-```
-
-### **3. Test Deploy**
+### **4. Verifica Deploy**
 ```bash
 # Health check
 curl https://your-app.railway.app/health
 
-# Test processamento (esempio)
+# Test processamento
 curl -X POST https://your-app.railway.app/process-inventory \
   -F "telegram_id=123456" \
-  -F "business_name=Test Restaurant" \
+  -F "business_name=Test" \
   -F "file_type=csv" \
   -F "file=@test.csv"
 ```
 
-## 🔗 Configurazione Sistema Completo
+## ⚙️ Configurazione
 
-### **Variabili Ambiente Bot**
-Nel bot principale (`telegram-bot/main.py`), configura:
-```env
-# Bot Telegram
-TELEGRAM_BOT_TOKEN=your_bot_token
-PROCESSOR_URL=https://your-processor.railway.app
+### **Variabili Ambiente**
 
-# Opzionali
-LOG_LEVEL=INFO
-DEBUG_MODE=false
-```
+**Obbligatorie**:
+- `DATABASE_URL`: URL connessione PostgreSQL
 
-### **Variabili Ambiente Processor**
-Nel processor (`gioia-processor/`), configura:
-```env
-# Database
-DATABASE_URL=postgresql://user:pass@host:port/db
-PORT=8001
+**Opzionali**:
+- `PORT`: Porta server (default: 8001)
+- `OPENAI_API_KEY`: API key OpenAI (se mancante, AI disabilitata)
 
-# AI
-OPENAI_API_KEY=your_openai_api_key
+**Feature Flags**:
+- `IA_TARGETED_ENABLED`: Abilita Stage 2 (default: true)
+- `LLM_FALLBACK_ENABLED`: Abilita Stage 3 (default: true)
+- `OCR_ENABLED`: Abilita Stage 4 (default: true)
 
-# Opzionali
-PYTHON_VERSION=3.11
-ENVIRONMENT=production
-```
+**Vedi**: `report/ENV_VARIABLES.md` per documentazione completa
 
-### **URL Endpoints Processor**
-- **Health**: `GET /health`
-- **Process**: `POST /process-inventory`
-- **Status**: `GET /status/{telegram_id}`
-- **AI Status**: `GET /ai/status`
-- **Debug Info**: `GET /debug/info`
+### **Endpoint API**
+- `POST /process-inventory` - Elabora file inventario
+- `POST /process-movement` - Processa movimento inventario
+- `GET /status/{job_id}` - Stato job elaborazione
+- `GET /health` - Health check
+- `GET /api/inventory/snapshot` - Snapshot inventario
+- `GET /api/viewer/{view_id}` - HTML viewer inventario
 
-## 📊 Modelli Database
+## 📊 Database
 
-### **Inventario**
-- `id`: Primary key
-- `telegram_id`: ID utente Telegram
-- `business_name`: Nome locale/azienda
-- `created_at`: Timestamp creazione
-- `status`: Stato elaborazione
+### **Tabelle Principali**
+- `users`: Utenti Telegram (telegram_id, business_name)
+- `processing_jobs`: Job elaborazione (job_id, status, processing_method)
 
-### **Vino**
-- `id`: Primary key
-- `inventory_id`: FK verso inventario
-- `name`: Nome vino
-- `vintage`: Annata
-- `producer`: Produttore
-- `region`: Regione
-- `price`: Prezzo
-- `quantity`: Quantità
-- `wine_type`: Tipo vino (rosso/bianco/rosato/spumante)
+### **Tabelle Dinamiche per Utente**
+- `inventario_{telegram_id}`: Inventario vini (name, winery, vintage, qty, price, type)
+- `consumi_{telegram_id}`: Log movimenti (wine_id, movement_type, quantity)
 
-## 🛠️ Sviluppo
+## 📈 Monitoring
 
-### **Test Locale**
-```bash
-# Avvia server sviluppo
-uvicorn main:app --reload --port 8001
+### **Logging JSON**
+Tutti i log in formato JSON strutturato con:
+- `correlation_id`: ID correlazione
+- `stage`: Stage pipeline
+- `decision`: Decisione finale
+- `metrics`: Metriche specifiche stage
+- `elapsed_sec`: Tempo elaborazione
 
-# Test health check
-curl http://localhost:8001/health
-```
+**Log leggibili in Railway dashboard**
 
-## 📈 Monitoraggio
+### **Alerting**
+Sistema alerting configurato per:
+- Stage 3 failure rate (>= 5 fallimenti/60min)
+- LLM cost (>= €0.50/60min)
+- Error rate (>= 10 errori/60min)
 
-### **Logs**
-- Elaborazione file
-- Errori parsing
-- Performance OCR
-- Connessioni database
-
-### **Metriche**
-- File processati
-- Tempo elaborazione
-- Success rate
-- Errori per tipo
+**Vedi**: `report/VERIFICA_ALERTING.md`
 
 ## 🔒 Sicurezza
 
 - **CORS**: Configurato per comunicazione bot
-- **Validazione**: Controllo input file
-- **Error Handling**: Gestione errori robusta
-- **Rate Limiting**: (da implementare)
+- **Validazione**: Pydantic validation per tutti i dati
+- **Error Handling**: Gestione errori robusta con fallback automatici
+- **Idempotency**: Supporto `client_msg_id` per richieste duplicate
+
+## 📚 Documentazione
+
+- **README.md**: Questo file (panoramica generale)
+- **report/DOCUMENTAZIONE_COMPLETA.md**: Documentazione tecnica completa
+- **report/VERIFICA_COMPLETA.md**: Verifica completa refactoring
+- **report/ENV_VARIABLES.md**: Documentazione variabili ambiente
 
 ## 🚀 Roadmap
 
 - [ ] Cache Redis per performance
 - [ ] Rate limiting API
-- [ ] Monitoring avanzato
+- [ ] Monitoring avanzato (Datadog, Logtail)
 - [ ] Supporto più formati file
 - [ ] OCR migliorato con AI
-- [ ] Batch processing
+- [ ] Batch processing per file grandi
 
-## 🔧 Troubleshooting Railway
+## 🔧 Troubleshooting
 
 ### **Problemi Comuni**
 
-#### **1. Deploy Fallisce**
-```bash
-# Controlla logs su Railway dashboard
-# Errori comuni:
-- requirements.txt mancante
-- start_processor.py non trovato
-- DATABASE_URL non configurato
-```
-
-#### **2. Database Connection Error**
+#### **1. Database Connection Error**
 ```bash
 # Verifica DATABASE_URL
 echo $DATABASE_URL
 
-# Test connessione locale
+# Test connessione
 psql $DATABASE_URL -c "SELECT 1;"
 ```
 
+#### **2. OpenAI API Error**
+```bash
+# Verifica OPENAI_API_KEY
+echo $OPENAI_API_KEY
+
+# Se mancante, AI features sono disabilitate (Stage 2 e 3)
+```
+
 #### **3. Port Binding Error**
+Railway auto-configura `PORT`, ma per locale:
 ```bash
-# Verifica che PORT sia configurato
-# Railway dovrebbe impostarlo automaticamente
-# Se manuale: export PORT=8001
+export PORT=8001
+python start_processor.py
 ```
 
-#### **4. Dependencies Error**
-```bash
-# Aggiorna requirements.txt
-pip freeze > requirements.txt
+### **Monitoraggio**
 
-# Verifica versioni compatibili
-pip install --upgrade -r requirements.txt
-```
+**Logs**: Tutti i log in formato JSON su stdout (leggibili in Railway dashboard)
 
-### **Monitoraggio Railway**
+**Health Check**: `GET /health` endpoint per monitoraggio automatico
 
-#### **Logs in Tempo Reale**
-1. **Railway Dashboard** → Progetto → Logs
-2. **Filtra per livello**: ERROR, WARN, INFO
-3. **Monitora**: Connessioni DB, API calls, Errori
-
-#### **Metriche Performance**
-- **CPU Usage**: Monitora utilizzo risorse
-- **Memory**: Controlla consumo RAM
-- **Response Time**: Tempo risposta API
-- **Error Rate**: Percentuale errori
-
-#### **Health Check Automatico**
-Railway monitora automaticamente:
-- **Endpoint**: `/health`
-- **Timeout**: 30 secondi
-- **Retry**: 3 tentativi
-- **Restart**: Automatico su failure
-
-## ✅ CHECKLIST DEPLOY COMPLETO
-
-### **Pre-Deploy**
-- [ ] Repository GitHub creato (`gioia-processor`)
-- [ ] Tutti i file creati (main.py, requirements.txt, etc.)
-- [ ] Codice committato e pushato su GitHub
-- [ ] Test locale funzionante
-
-### **Deploy Railway**
-- [ ] Progetto Railway creato
-- [ ] Repository GitHub connesso
-- [ ] Database PostgreSQL creato
-- [ ] Variabili ambiente configurate
-- [ ] Deploy completato con successo
-
-### **Post-Deploy**
-- [ ] Health check funzionante (`/health`)
-- [ ] Database connesso
-- [ ] URL processor ottenuto
-- [ ] Bot principale aggiornato con PROCESSOR_URL
-- [ ] Test integrazione bot-processor
-
-### **Verifica Finale Sistema Completo**
-- [ ] **Processor deployato** su Railway ✅
-- [ ] **Bot deployato** e funzionante ✅
-- [ ] **Connessione bot-processor** funzionante ✅
-- [ ] **Database** connesso e operativo ✅
-- [ ] **AI features** abilitate ✅
-- [ ] **Test end-to-end** completato ✅
-
-### **Test Sistema Completo**
-```bash
-# 1. Test processor
-curl https://your-processor.railway.app/health
-
-# 2. Test debug info
-curl https://your-processor.railway.app/debug/info
-
-# 3. Test AI
-curl https://your-processor.railway.app/ai/status
-
-# 4. Test bot (nel bot Telegram)
-/testprocessor
-
-# 5. Test completo inventario
-# Invia file CSV/Excel/immagine al bot
-# Verifica elaborazione e notifica
-```
+**Alerting**: Alert automatici per Stage 3 failure, costi LLM, errori
 
 ## 📞 Supporto
 
-Per problemi o domande:
-- **Repository**: `gioia-processor`
+- **Documentazione**: `report/DOCUMENTAZIONE_COMPLETA.md`
 - **Logs**: Railway dashboard → Logs
-- **Database**: Railway PostgreSQL dashboard
-- **Bot Integration**: Usa `/testprocessor` nel bot
-
-### **Comandi Debug**
-```bash
-# Test locale
-python start_processor.py
-
-# Test endpoint
-curl http://localhost:8001/health
-
-# Test database
-python -c "from database import engine; print('DB OK')"
-
-# Test completo
-python test_processor.py
-```
-
-## 🎯 Gestione Workspace Cursor
-
-### **Struttura Workspace Unificato**
-```
-gioia-system/                    # Workspace principale
-├── telegram-bot/               # Bot Telegram
-│   ├── main.py                # ← Apri in Cursor
-│   ├── handlers/
-│   └── requirements.txt
-│
-├── gioia-processor/           # AI Processor  
-│   ├── main.py                # ← Apri in Cursor
-│   ├── ai_processor.py        # ← Apri in Cursor
-│   ├── database.py           # ← Apri in Cursor
-│   └── requirements.txt
-│
-└── README.md                  # ← Questo file
-```
-
-### **Comandi Cursor Workspace**
-```bash
-# Apri tutto il sistema in Cursor
-cursor gioia-system/
-
-# Apri solo il processor
-cursor gioia-system/gioia-processor/
-
-# Apri solo il bot
-cursor gioia-system/telegram-bot/
-
-# Test completo sistema
-cd gioia-system/gioia-processor
-python test_processor.py
-```
-
-### **Sviluppo Simultaneo**
-- ✅ **Bot e Processor** nello stesso workspace
-- ✅ **Debugging** integrato
-- ✅ **Git** unificato per tutto il sistema
-- ✅ **Deploy** separati ma coordinati
+- **Verifiche**: `report/VERIFICA_COMPLETA.md`
 
 ---
 
-**Nota**: Il sistema è ora completamente integrato con bot Telegram e AI processor in un unico workspace per sviluppo e gestione semplificati.
+**Versione**: 2.0.0  
+**Data**: 2025-01-XX

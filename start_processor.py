@@ -30,8 +30,9 @@ if __name__ == "__main__":
     logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'production')}")
     
     try:
+        # Usa nuovo api.main invece di main vecchio
         uvicorn.run(
-            "main:app",
+            "api.main:app",
             host=host,
             port=port,
             workers=workers,  # Multi-worker per concorrenza
