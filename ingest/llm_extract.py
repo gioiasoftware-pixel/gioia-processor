@@ -466,20 +466,33 @@ async def extract_llm_mode(
         
         # 4. Deduplica righe simili
         deduplicated_wines = deduplicate_wines(all_wines, merge_quantities=True)
+        logger.info(f"[LLM_EXTRACT] Dopo deduplicazione: {len(deduplicated_wines)} vini")
         
         # 5. Normalizza valori
         normalized_wines = []
-        for wine in deduplicated_wines:
+        for idx, wine in enumerate(deduplicated_wines):
             try:
+                logger.debug(f"[LLM_EXTRACT] Normalizzando vino {idx+1}/{len(deduplicated_wines)}: {wine.get('name', 'N/A')[:50]}")
                 normalized = normalize_values(wine)
+                logger.debug(f"[LLM_EXTRACT] Vino normalizzato: name={normalized.get('name')}, qty={normalized.get('qty')}, price={normalized.get('price')}")
                 if normalized.get('name'):  # Solo se ha name
                     normalized_wines.append(normalized)
+                    logger.debug(f"[LLM_EXTRACT] Vino aggiunto a normalized_wines (totale: {len(normalized_wines)})")
+                else:
+                    logger.warning(f"[LLM_EXTRACT] Vino scartato: name vuoto dopo normalizzazione")
             except Exception as e:
-                logger.debug(f"[LLM_EXTRACT] Errore normalizzazione vino: {e}")
+                logger.warning(f"[LLM_EXTRACT] Errore normalizzazione vino {idx+1}: {e}", exc_info=True)
                 continue
         
+        logger.info(f"[LLM_EXTRACT] Dopo normalizzazione: {len(normalized_wines)} vini validi")
+        
         # 6. Validazione finale con Pydantic
+        if not normalized_wines:
+            logger.error("[LLM_EXTRACT] Nessun vino dopo normalizzazione, fallimento")
+            return [], {'error': 'Nessun vino dopo normalizzazione', 'wines_extracted': len(all_wines), 'wines_deduplicated': len(deduplicated_wines)}, 'error'
+        
         valid_wines, rejected_wines, validation_stats = validate_batch(normalized_wines)
+        logger.info(f"[LLM_EXTRACT] Dopo validazione Pydantic: {len(valid_wines)} validi, {len(rejected_wines)} rifiutati")
         
         # Converti WineItemModel in dict
         wines_data_valid = [wine_model_to_dict(wine) for wine in valid_wines]

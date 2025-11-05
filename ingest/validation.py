@@ -106,10 +106,17 @@ def validate_batch(wines_data: List[Dict[str, Any]]) -> Tuple[List[WineItemModel
             # Valida con Pydantic
             wine = WineItemModel(**wine_data)
             valid_wines.append(wine)
+            logger.debug(f"[VALIDATION] Vino {idx+1} valido: name={wine.name}, qty={wine.qty}")
         except Exception as e:
             # Cattura errore validazione
             error_msg = str(e)
             error_type = type(e).__name__
+            
+            # Log dettagliato per debug
+            logger.warning(
+                f"[VALIDATION] Vino {idx+1} rifiutato: {error_type} - {error_msg[:100]}"
+            )
+            logger.debug(f"[VALIDATION] Dati vino rifiutato: {wine_data}")
             
             # Conta motivo rifiuto
             if error_type not in rejection_reasons:
