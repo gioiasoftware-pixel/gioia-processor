@@ -151,12 +151,22 @@ def normalize_vintage(value: Any) -> Optional[int]:
     Returns:
         Anno (1900-2099) o None
     """
+    # Controlla NaN prima di qualsiasi altra operazione
+    if is_na(value):
+        return None
+    
     if value is None:
         return None
     
+    # Se è float NaN, ritorna None
+    if isinstance(value, float):
+        import math
+        if math.isnan(value):
+            return None
+    
     # Converti a string
     value_str = str(value).strip()
-    if not value_str:
+    if not value_str or value_str.lower() in ['nan', 'none', 'null', 'n/a', 'na']:
         return None
     
     # Cerca anno 4 cifre (1900-2099)
@@ -183,16 +193,23 @@ def normalize_qty(value: Any) -> int:
     Returns:
         Quantità (>= 0, default 0)
     """
+    # Controlla NaN prima di qualsiasi altra operazione
+    if is_na(value):
+        return 0
+    
     if value is None:
         return 0
     
-    # Se è già int/float, arrotonda
+    # Se è già int/float, verifica NaN prima di convertire
     if isinstance(value, (int, float)):
+        import math
+        if math.isnan(value):
+            return 0
         return max(0, int(value))
     
     # Converti a string
     value_str = str(value).strip()
-    if not value_str:
+    if not value_str or value_str.lower() in ['nan', 'none', 'null', 'n/a', 'na']:
         return 0
     
     # Estrai primo numero intero
@@ -217,11 +234,18 @@ def normalize_price(value: Any) -> Optional[float]:
     Returns:
         Prezzo (>= 0.0) o None
     """
+    # Controlla NaN prima di qualsiasi altra operazione
+    if is_na(value):
+        return None
+    
     if value is None:
         return None
     
-    # Se è già float/int, ritorna
+    # Se è già float/int, verifica NaN prima di convertire
     if isinstance(value, (int, float)):
+        import math
+        if math.isnan(value):
+            return None
         return max(0.0, float(value))
     
     # Converti a string
