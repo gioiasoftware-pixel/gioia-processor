@@ -12,7 +12,7 @@ from core.logger import log_json, set_request_context, get_request_context
 from ingest.gate import route_file
 from ingest.parser import parse_classic
 from ingest.llm_targeted import apply_targeted_ai
-from ingest.llm_extract import extract_llm_mode
+from ingest.llm_extract import extract_llm_mode, deduplicate_wines
 from ingest.ocr_extract import extract_ocr
 
 logger = logging.getLogger(__name__)
@@ -286,10 +286,14 @@ async def _process_csv_excel_path(
         decision = 'escalate_to_stage3'
     
     # Stage 3: LLM mode (se abilitato e escalate da Stage 2)
+    # SOLUZIONE 1 (IBRIDO): Salva vini da stage precedenti (Stage 1 o Stage 2) per unirli con Stage 3
+    # Usa i vini migliorati da Stage 2 se disponibili, altrimenti quelli di Stage 1
+    previous_stage_wines = wines_data.copy() if wines_data else []  # Salva vini prima di Stage 3
+    
     if decision == 'escalate_to_stage3' and config.llm_fallback_enabled:
         try:
             logger.info(f"[PIPELINE] Stage 3: Starting LLM mode for {file_name}")
-            wines_data, metrics_stage3, decision = await extract_llm_mode(
+            wines_data_stage3, metrics_stage3, decision = await extract_llm_mode(
                 file_content=file_content,
                 file_name=file_name,
                 ext=ext,
@@ -302,11 +306,51 @@ async def _process_csv_excel_path(
             metrics.update(metrics_stage3)
             
             if decision == 'save':
-                logger.info(f"[PIPELINE] Stage 3 SUCCESS: {len(wines_data)} wines extracted")
+                # SOLUZIONE 1 (IBRIDO): Unisci stage precedenti (Stage 1/2) + Stage 3
+                if previous_stage_wines:
+                    logger.info(
+                        f"[PIPELINE] Unendo stage precedenti ({len(previous_stage_wines)} vini) + "
+                        f"Stage 3 ({len(wines_data_stage3)} vini)"
+                    )
+                    
+                    # Unisci i due dataset
+                    combined_wines = previous_stage_wines + wines_data_stage3
+                    logger.info(f"[PIPELINE] Totale vini prima deduplicazione: {len(combined_wines)}")
+                    
+                    # Deduplica per (name, winery, vintage) e somma qty se duplicati
+                    wines_data = deduplicate_wines(combined_wines, merge_quantities=True)
+                    
+                    logger.info(
+                        f"[PIPELINE] Stage 1/2+3 (IBRIDO) SUCCESS: "
+                        f"{len(previous_stage_wines)} (Stage 1/2) + {len(wines_data_stage3)} (Stage 3) = "
+                        f"{len(combined_wines)} (totale) → {len(wines_data)} (dopo deduplicazione)"
+                    )
+                    
+                    # Aggiorna metriche con info unione
+                    metrics['previous_stage_wines_count'] = len(previous_stage_wines)
+                    metrics['stage3_wines_count'] = len(wines_data_stage3)
+                    metrics['combined_wines_count'] = len(combined_wines)
+                    metrics['final_wines_count'] = len(wines_data)
+                    metrics['deduplication_removed'] = len(combined_wines) - len(wines_data)
+                else:
+                    # Nessun vino da stage precedenti, usa solo Stage 3
+                    wines_data = wines_data_stage3
+                    logger.info(f"[PIPELINE] Stage 3 SUCCESS: {len(wines_data)} wines extracted (no previous stage data to merge)")
+                
                 return wines_data, metrics, decision, stage_used
             else:
                 logger.error(f"[PIPELINE] Stage 3 FAILED: decision={decision}")
-                return wines_data, metrics, decision, stage_used
+                # Se Stage 3 fallisce ma abbiamo vini da stage precedenti, usali comunque
+                if previous_stage_wines:
+                    logger.info(
+                        f"[PIPELINE] Stage 3 fallito ma ho {len(previous_stage_wines)} vini da stage precedenti, "
+                        f"usando quelli come fallback"
+                    )
+                    wines_data = previous_stage_wines
+                    decision = 'save'  # Salva comunque i vini di stage precedenti
+                    metrics['fallback_to_previous_stage'] = True
+                    return wines_data, metrics, decision, 'llm_mode_fallback_previous'
+                return wines_data_stage3, metrics, decision, stage_used
         except Exception as e:
             logger.error(f"[PIPELINE] Stage 3 failed: {e}", exc_info=True)
             metrics['stage3_error'] = str(e)
