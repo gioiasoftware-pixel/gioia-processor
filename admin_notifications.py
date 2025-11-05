@@ -32,14 +32,19 @@ async def enqueue_admin_notification(
     """
     try:
         # Serializza payload in JSON
-        payload_json = json.dumps(payload)
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        
+        # Escape del JSON per sicurezza (sostituisci singoli apici)
+        payload_json_escaped = payload_json.replace("'", "''")
         
         # Inserisci nella tabella admin_notifications usando get_db()
+        # asyncpg non supporta cast esplicito :payload::jsonb in prepared statements
+        # Quindi inseriamo il JSON come stringa letterale e facciamo cast nel SQL
         async for db in get_db():
-            query = sql_text("""
+            query = sql_text(f"""
                 INSERT INTO admin_notifications 
                 (event_type, telegram_id, correlation_id, payload, status)
-                VALUES (:event_type, :telegram_id, :correlation_id, :payload::jsonb, 'pending')
+                VALUES (:event_type, :telegram_id, :correlation_id, '{payload_json_escaped}'::jsonb, 'pending')
             """)
             
             await db.execute(
@@ -47,8 +52,7 @@ async def enqueue_admin_notification(
                 {
                     "event_type": event_type,
                     "telegram_id": telegram_id,
-                    "correlation_id": correlation_id,
-                    "payload": payload_json
+                    "correlation_id": correlation_id
                 }
             )
             await db.commit()
