@@ -105,6 +105,12 @@ def get_config() -> ProcessorConfig:
     return _config
 
 
+def validate_config() -> bool:
+    """Valida configurazione critica (funzione standalone per compatibilità)."""
+    config = get_config()
+    return config.validate_config()
+
+
 # Backward compatibility: esporta variabili per codice esistente
 def get_legacy_config():
     """Ritorna dict con variabili per backward compatibility."""
