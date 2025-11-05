@@ -174,20 +174,26 @@ async def extract_with_llm(text_chunk: str, telegram_id: Optional[int] = None, c
     try:
         client = get_openai_client()
         
-        # Prompt P3
+        # Prompt P3 (migliorato per evitare JSON malformato)
         prompt = f"""Sei un estrattore di tabelle inventario vini.
 
 Obiettivo:
 - Dal testo fornito, estrai una lista di voci vino nel seguente schema JSON:
   {{ "name": string, "winery": string|null, "vintage": int|null, "qty": int>=0, "price": float|null, "type": string|null }}
 
-Regole:
-- "vintage" deve essere 1900–2099 oppure null.
+Regole CRITICHE per JSON valido:
+- ESCAPA tutte le virgolette nei valori: se il nome contiene " usa \\" (es. "Chianti" → "Chianti")
+- ESCAPA tutti gli apostrofi: L'Etna → L\\'Etna oppure usa virgolette esterne "L'Etna"
+- ESCAPA backslash: usa \\\\ per rappresentare \\
+- Chiudi SEMPRE tutte le stringhe con virgolette doppie
+- "vintage" deve essere 1900–2099 oppure null (non stringa).
 - "qty" deve essere un intero (es. "12 bottiglie" → 12).
 - "price" in EUR: accetta virgola (es. 8,50 → 8.5). Se assente → null.
 - "type": una di [Rosso, Bianco, Rosato, Spumante, Altro]; se incerto → null.
 - Ignora righe che non siano vini (totali, note, sconti).
-- Output SOLO JSON (array di oggetti), nessun testo extra.
+- Output SOLO JSON array valido, nessun testo extra, nessun commento.
+
+IMPORTANTE: Verifica che il JSON sia valido prima di inviarlo. Usa un validator JSON se necessario.
 
 Testo:
 <<<
@@ -245,7 +251,86 @@ Testo:
                 result_text = result_text[4:]
             result_text = result_text.strip()
         
-        wines = json.loads(result_text)
+        # Tentativo 1: Parsing diretto
+        try:
+            wines = json.loads(result_text)
+        except json.JSONDecodeError as json_error:
+            logger.warning(f"[LLM_EXTRACT] Errore parsing JSON (tentativo 1): {json_error}")
+            
+            # Tentativo 2: Cerca array JSON nel testo (potrebbe essere in mezzo a testo)
+            import re
+            json_match = re.search(r'\[.*\]', result_text, re.DOTALL)
+            if json_match:
+                try:
+                    wines = json.loads(json_match.group(0))
+                    logger.info("[LLM_EXTRACT] JSON estratto con regex")
+                except json.JSONDecodeError:
+                    wines = None
+            else:
+                wines = None
+            
+            # Tentativo 3: Fix automatico JSON malformato
+            if wines is None:
+                try:
+                    # Rimuovi caratteri problematici comuni
+                    fixed_text = result_text
+                    # Chiudi stringhe non terminate (semplificato)
+                    # Rimuovi caratteri non-printable
+                    fixed_text = ''.join(char for char in fixed_text if char.isprintable() or char in '\n\r\t')
+                    # Tenta di fixare stringhe non chiuse aggiungendo virgolette
+                    # Questo è un fix molto semplice, potrebbe non funzionare sempre
+                    fixed_text = fixed_text.replace('"', '"').replace('"', '"')  # Normalizza virgolette
+                    
+                    wines = json.loads(fixed_text)
+                    logger.info("[LLM_EXTRACT] JSON fixato automaticamente")
+                except (json.JSONDecodeError, Exception) as fix_error:
+                    logger.error(f"[LLM_EXTRACT] Errore fix JSON automatico: {fix_error}")
+                    logger.debug(f"[LLM_EXTRACT] Risposta AI (primi 1000 char): {result_text[:1000]}")
+                    
+                    # Tentativo 4: Retry con prompt più forte
+                    logger.info("[LLM_EXTRACT] Retry con prompt più forte per JSON valido")
+                    try:
+                        retry_prompt = f"""Il JSON precedente era malformato. Genera un JSON array valido estraendo i vini dal testo.
+
+RICORDA:
+- Escapa tutte le virgolette nei valori stringa: "name" → "name"
+- Escapa tutti gli apostrofi: L'Etna → L\\'Etna oppure "L'Etna"
+- Chiudi tutte le stringhe e parentesi
+- Output SOLO JSON array valido, nessun testo extra
+
+Testo originale:
+<<<
+{text_chunk[:20000]}  # Limita a 20KB per retry
+>>>
+
+Genera JSON valido:"""
+                        
+                        retry_response = client.chat.completions.create(
+                            model=config.llm_model_extract,
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": "Sei un estrattore JSON. Genera SEMPRE JSON valido e ben formattato. Escapa tutti i caratteri speciali."
+                                },
+                                {"role": "user", "content": retry_prompt}
+                            ],
+                            temperature=0.1,
+                            max_tokens=4000
+                        )
+                        
+                        retry_text = retry_response.choices[0].message.content.strip()
+                        if retry_text.startswith("```"):
+                            retry_text = retry_text.split("```")[1]
+                            if retry_text.startswith("json"):
+                                retry_text = retry_text[4:]
+                            retry_text = retry_text.strip()
+                        
+                        wines = json.loads(retry_text)
+                        logger.info("[LLM_EXTRACT] JSON parsato dopo retry")
+                    except Exception as retry_error:
+                        logger.error(f"[LLM_EXTRACT] Errore anche nel retry: {retry_error}")
+                        logger.debug(f"[LLM_EXTRACT] Risposta retry (primi 500 char): {retry_text[:500] if 'retry_text' in locals() else 'N/A'}")
+                        return []
         
         # Verifica che sia un array
         if not isinstance(wines, list):
@@ -257,7 +342,7 @@ Testo:
         
     except json.JSONDecodeError as e:
         logger.error(f"[LLM_EXTRACT] Errore parsing JSON da AI: {e}")
-        logger.debug(f"[LLM_EXTRACT] Risposta AI: {result_text[:500]}")
+        logger.debug(f"[LLM_EXTRACT] Risposta AI (primi 1000 char): {result_text[:1000] if 'result_text' in locals() else 'N/A'}")
         return []
     except Exception as e:
         logger.error(f"[LLM_EXTRACT] Errore estrazione LLM: {e}", exc_info=True)
