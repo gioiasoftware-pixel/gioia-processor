@@ -151,8 +151,10 @@ def parse_classic(
                 # Aggiungi solo se ha name (obbligatorio)
                 if normalized_row.get('name'):
                     wines_data.append(normalized_row)
+                else:
+                    logger.debug(f"[PARSER] Riga {index} scartata: name vuoto (dati: {row_dict.get('name', 'N/A')[:50]})")
             except Exception as e:
-                logger.debug(f"[PARSER] Error normalizing row {index}: {e}")
+                logger.warning(f"[PARSER] Error normalizing row {index}: {e}")
                 continue
         
         # Validation: valida con Pydantic

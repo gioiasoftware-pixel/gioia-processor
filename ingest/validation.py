@@ -137,10 +137,21 @@ def validate_batch(wines_data: List[Dict[str, Any]]) -> Tuple[List[WineItemModel
         'rejection_reasons': rejection_reasons
     }
     
-    logger.debug(
-        f"[VALIDATION] Batch validation: {stats['rows_valid']}/{stats['rows_total']} valid, "
-        f"{stats['rows_rejected']} rejected"
+    logger.info(
+        f"[VALIDATION] Batch validation: {stats['rows_valid']}/{stats['rows_total']} validi, "
+        f"{stats['rows_rejected']} rifiutati"
     )
+    
+    if stats['rows_rejected'] > 0:
+        # Log motivi rifiuto per debug
+        logger.info(f"[VALIDATION] Motivi rifiuto: {rejection_reasons}")
+        # Log primi 3 vini rifiutati per esempio
+        for i, rejected in enumerate(rejected_wines[:3]):
+            logger.debug(
+                f"[VALIDATION] Vino rifiutato {i+1}: {rejected.get('error_type')} - "
+                f"name={rejected['data'].get('name', 'N/A')[:30]}, "
+                f"qty={rejected['data'].get('qty', 'N/A')}"
+            )
     
     return valid_wines, rejected_wines, stats
 

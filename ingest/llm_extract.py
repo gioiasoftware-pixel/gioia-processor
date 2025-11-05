@@ -547,11 +547,13 @@ async def extract_llm_mode(
             try:
                 wines_chunk = await extract_with_llm(chunk, telegram_id=telegram_id, correlation_id=correlation_id)
                 all_wines.extend(wines_chunk)
-                logger.debug(f"[LLM_EXTRACT] Chunk {chunk_idx + 1}/{len(chunks)}: {len(wines_chunk)} vini")
+                logger.info(f"[LLM_EXTRACT] Chunk {chunk_idx + 1}/{len(chunks)}: {len(wines_chunk)} vini estratti")
             except Exception as e:
                 logger.warning(f"[LLM_EXTRACT] Errore chunk {chunk_idx + 1}: {e}")
                 # Alert costi LLM per ogni chunk (gestito in extract_with_llm)
                 continue
+        
+        logger.info(f"[LLM_EXTRACT] Totale vini estratti da tutti i chunk: {len(all_wines)}")
         
         if not all_wines:
             logger.warning("[LLM_EXTRACT] Nessun vino estratto da LLM")
@@ -559,7 +561,10 @@ async def extract_llm_mode(
         
         # 4. Deduplica righe simili
         deduplicated_wines = deduplicate_wines(all_wines, merge_quantities=True)
-        logger.info(f"[LLM_EXTRACT] Dopo deduplicazione: {len(deduplicated_wines)} vini")
+        logger.info(
+            f"[LLM_EXTRACT] Dopo deduplicazione: {len(deduplicated_wines)} vini "
+            f"(da {len(all_wines)} estratti, {len(all_wines) - len(deduplicated_wines)} duplicati rimossi)"
+        )
         
         # 5. Normalizza valori
         normalized_wines = []
