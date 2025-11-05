@@ -56,11 +56,10 @@ async def process_inventory_background(
     
     try:
         async for db in get_db():
-            # Aggiorna job status a processing
+            # Aggiorna job status a processing (started_at gestito automaticamente)
             await update_job_status(
                 db, job_id, 
-                status='processing',
-                started_at=datetime.utcnow()
+                status='processing'
             )
             
             log_with_context(
@@ -125,8 +124,7 @@ async def process_inventory_background(
                     await update_job_status(
                         db, job_id,
                         status='error',
-                        error_message=error_msg,
-                        completed_at=datetime.utcnow()
+                        error_message=error_msg
                     )
                     
                     # Notifica admin per errore processing
@@ -173,8 +171,7 @@ async def process_inventory_background(
                     await update_job_status(
                         db, job_id,
                         status='completed',
-                        result_data=json.dumps(result_data),
-                        completed_at=datetime.utcnow()
+                        result_data=result_data
                     )
                     return
                 
@@ -233,8 +230,7 @@ async def process_inventory_background(
                     await update_job_status(
                         db, job_id,
                         status='error',
-                        error_message=f"Database error: {str(db_error)}",
-                        completed_at=datetime.utcnow()
+                        error_message=f"Database error: {str(db_error)}"
                     )
                     
                     # Notifica admin per errore database
@@ -292,14 +288,13 @@ async def process_inventory_background(
                         f"✅ Salvati {saved_count} vini su {len(wines_data)} senza errori."
                     )
                 
-                # Aggiorna job come completato
+                # Aggiorna job come completato (completed_at gestito automaticamente)
                 await update_job_status(
                     db, job_id,
                     status='completed',
                     saved_wines=saved_count,
                     error_count=error_count,
-                    result_data=json.dumps(result_data),
-                    completed_at=datetime.utcnow()
+                    result_data=result_data
                 )
                 
                 logger.info(f"Job {job_id}: Completed successfully")
@@ -337,8 +332,7 @@ async def process_inventory_background(
                 await update_job_status(
                     db, job_id,
                     status='error',
-                    error_message=f"Error processing file: {str(processing_error)}",
-                    completed_at=datetime.utcnow()
+                    error_message=f"Error processing file: {str(processing_error)}"
                 )
                 
                 # Notifica admin per errore processing
@@ -371,8 +365,7 @@ async def process_inventory_background(
                 await update_job_status(
                     db, job_id,
                     status='error',
-                    error_message=f"Unexpected error: {str(e)}",
-                    completed_at=datetime.utcnow()
+                    error_message=f"Unexpected error: {str(e)}"
                 )
                 
                 # Notifica admin per errore inaspettato
