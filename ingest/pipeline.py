@@ -214,12 +214,13 @@ async def _process_csv_excel_path(
         wines_data, metrics, decision = parse_classic(
             file_content=file_content,
             file_name=file_name,
-            ext=ext,
-            telegram_id=telegram_id,
-            correlation_id=correlation_id
+            ext=ext
         )
         stage_used = 'csv_excel_parse'
-        metrics['stages_attempted'] = ['csv_excel_parse']
+        # Inizializza stages_attempted se non presente
+        if 'stages_attempted' not in metrics:
+            metrics['stages_attempted'] = []
+        metrics['stages_attempted'].append('csv_excel_parse')
         
         if decision == 'save':
             logger.info(f"[PIPELINE] Stage 1 SUCCESS: {len(wines_data)} wines extracted")
@@ -231,7 +232,18 @@ async def _process_csv_excel_path(
             decision = 'escalate_to_stage2'
     except Exception as e:
         logger.error(f"[PIPELINE] Stage 1 failed: {e}", exc_info=True)
+        # Inizializza metrics se Stage 1 fallisce completamente
+        if not metrics:
+            metrics = {
+                'schema_score': 0.0,
+                'valid_rows': 0.0,
+                'rows_total': 0,
+                'rows_valid': 0,
+                'rows_rejected': 0,
+                'stages_attempted': []
+            }
         metrics['stage1_error'] = str(e)
+        metrics.setdefault('stages_attempted', []).append('csv_excel_parse')
         decision = 'escalate_to_stage2'  # Try Stage 2
     
     # Stage 2: IA mirata (se abilitato e escalate da Stage 1)
@@ -253,7 +265,8 @@ async def _process_csv_excel_path(
                 ext=ext
             )
             stage_used = 'ia_targeted'
-            metrics['stages_attempted'].append('ia_targeted')
+            # Assicura che stages_attempted esista
+            metrics.setdefault('stages_attempted', []).append('ia_targeted')
             metrics.update(metrics_stage2)
             
             if decision == 'save':
@@ -284,7 +297,8 @@ async def _process_csv_excel_path(
                 correlation_id=correlation_id
             )
             stage_used = 'llm_mode'
-            metrics['stages_attempted'].append('llm_mode')
+            # Assicura che stages_attempted esista
+            metrics.setdefault('stages_attempted', []).append('llm_mode')
             metrics.update(metrics_stage3)
             
             if decision == 'save':
@@ -342,7 +356,10 @@ async def _process_ocr_path(
                 telegram_id=telegram_id,
                 correlation_id=correlation_id
             )
-            metrics['stages_attempted'] = ['ocr']
+            # Assicura che stages_attempted esista
+            if 'stages_attempted' not in metrics:
+                metrics['stages_attempted'] = []
+            metrics['stages_attempted'].append('ocr')
             
             if decision == 'save':
                 logger.info(f"[PIPELINE] Stage 4 SUCCESS: {len(wines_data)} wines extracted via OCR+LLM")
