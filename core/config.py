@@ -42,7 +42,7 @@ class ProcessorConfig(BaseSettings):
     csv_max_attempts: int = Field(default=3, description="Max tentativi parsing CSV")
     schema_score_th: float = Field(default=0.7, ge=0.0, le=1.0, description="Soglia schema_score per Stage 1")
     min_valid_rows: float = Field(default=0.6, ge=0.0, le=1.0, description="Soglia valid_rows per Stage 1")
-    header_confidence_th: float = Field(default=0.75, ge=0.0, le=1.0, description="Confidence threshold per header mapping")
+    header_confidence_th: float = Field(default=0.55, ge=0.0, le=1.0, description="Confidence threshold per header mapping (più basso = più permissivo)")
     
     # IA mirata (Stage 2)
     batch_size_ambiguous_rows: int = Field(default=20, ge=1, le=100, description="Batch size per righe ambigue")

@@ -148,29 +148,35 @@ def parse_classic(
                 # Normalizza valori
                 normalized_row = normalize_values(row_dict)
                 
-                # Filtra righe vuote: name deve essere valido e non placeholder
+                # Filtra SOLO righe chiaramente vuote o placeholder
+                # Stage 1 deve pulire ma NON togliere vini validi - lascia che Stage 3 gestisca righe incomplete
                 name = normalized_row.get('name', '').strip()
-                is_valid_name = (
-                    name and 
-                    len(name) > 0 and 
-                    name.lower() not in ['nan', 'none', 'null', 'n/a', 'na', 'undefined']
+                
+                # Name invalido: vuoto o placeholder
+                is_invalid_name = (
+                    not name or 
+                    len(name) == 0 or 
+                    name.lower() in ['nan', 'none', 'null', 'n/a', 'na', 'undefined', '', ' ']
                 )
                 
-                # Verifica anche che non sia una riga completamente vuota
-                # (se name è valido ma tutti gli altri campi sono vuoti, potrebbe essere un header/separatore)
-                has_other_data = (
+                # Verifica se la riga ha dati significativi (potrebbe essere un vino anche senza name valido)
+                has_meaningful_data = (
                     normalized_row.get('winery') or 
                     normalized_row.get('qty', 0) > 0 or 
                     normalized_row.get('price') is not None or
                     normalized_row.get('vintage') is not None
                 )
                 
-                if is_valid_name and (has_other_data or len(name) > 2):  # Permetti name solo se ha altri dati o è abbastanza lungo
+                # Riga completamente vuota: name invalido E nessun dato significativo
+                is_completely_empty = is_invalid_name and not has_meaningful_data
+                
+                # Conserva se: name valido OPPURE ha dati significativi (lascia che Stage 3 gestisca)
+                if not is_completely_empty:
                     wines_data.append(normalized_row)
                 else:
                     logger.debug(
-                        f"[PARSER] Riga {index} scartata: name invalido o riga vuota "
-                        f"(name='{name[:30]}', has_other_data={has_other_data})"
+                        f"[PARSER] Riga {index} scartata: completamente vuota "
+                        f"(name='{name[:30] if name else 'EMPTY'}', has_data={has_meaningful_data})"
                     )
             except Exception as e:
                 logger.warning(f"[PARSER] Error normalizing row {index}: {e}")

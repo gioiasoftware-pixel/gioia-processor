@@ -21,13 +21,14 @@ COLUMN_MAPPINGS = {
 }
 
 # Mapping completo (esteso per compatibilità con codice esistente)
+# Aggiunti più sinonimi per aumentare matching fuzzy
 COLUMN_MAPPINGS_EXTENDED = {
-    'name': ['nome', 'vino', 'wine', 'wine name', 'nome vino', 'denominazione', 'etichetta', 'prodotto', 'articolo', 'descrizione', 'titolo', 'label'],
-    'vintage': ['annata', 'year', 'vintage', 'anno', 'anno produzione', 'vintage year', 'anno vendemmia', 'vendemmia', 'yr', 'vintage year'],
-    'winery': ['produttore', 'producer', 'winery', 'azienda', 'casa vinicola', 'marca', 'brand', 'cantina', 'fattoria', 'azienda vinicola', 'casa produttrice', 'casa'],
-    'qty': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta', 'qta_magazzino', 'qta magazzino', 'qta', 'disp', 'disponibilità', 'stock', 'q iniziale', 'q. iniziale', 'quantità iniziale', 'q iniz', 'q. iniz', 'q iniziale magazzino', 'quantità iniz', 'q iniziale stock', 'q iniz', 'q cantina'],
-    'price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta', 'listino', 'prezzo listino', 'prezzo_unit_eur', 'prezzo unit eur', 'prezzo unitario', 'prezzo unit', 'eur', 'euro', 'costo', 'valore', 'prezzo fornitore'],
-    'type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino', 'colore', 'tipologia', 'uvaggio'],
+    'name': ['nome', 'vino', 'wine', 'wine name', 'nome vino', 'denominazione', 'etichetta', 'prodotto', 'articolo', 'descrizione', 'titolo', 'label', 'nome prodotto', 'denominazione vino', 'vino nome', 'wine name', 'nome articolo', 'descrizione prodotto', 'prodotto nome', 'articolo nome'],
+    'vintage': ['annata', 'year', 'vintage', 'anno', 'anno produzione', 'vintage year', 'anno vendemmia', 'vendemmia', 'yr', 'vintage year', 'anno vinificazione', 'year vintage', 'vintage yr', 'anno prod', 'prod year', 'anno vino'],
+    'winery': ['produttore', 'producer', 'winery', 'azienda', 'casa vinicola', 'marca', 'brand', 'cantina', 'fattoria', 'azienda vinicola', 'casa produttrice', 'casa', 'produttore vino', 'azienda produttrice', 'casa vinicola', 'marca vino', 'brand vino', 'cantina produttrice', 'fattoria vinicola'],
+    'qty': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta', 'qta_magazzino', 'qta magazzino', 'qta', 'disp', 'disponibilità', 'stock', 'q iniziale', 'q. iniziale', 'quantità iniziale', 'q iniz', 'q. iniz', 'q iniziale magazzino', 'quantità iniz', 'q iniziale stock', 'q iniz', 'q cantina', 'quantità disponibile', 'q disponibile', 'q disponibile magazzino', 'scorta disponibile', 'pezzi disponibili', 'bottiglie disponibili', 'quantità stock', 'q stock', 'disponibilità magazzino', 'q.ty', 'qty.', 'qty disponibile', 'quantità iniz', 'q iniz magazzino'],
+    'price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta', 'listino', 'prezzo listino', 'prezzo_unit_eur', 'prezzo unit eur', 'prezzo unitario', 'prezzo unit', 'eur', 'euro', 'costo', 'valore', 'prezzo fornitore', 'prezzo unitario eur', 'prezzo unitario euro', 'prezzo vendita eur', 'prezzo vendita euro', 'listino prezzo', 'prezzo listino eur', 'costo unitario', 'valore unitario', 'prezzo pz', 'prezzo pezzo', 'prezzo bottiglia', 'eur pz', 'euro pz', 'eur pezzo', 'euro pezzo'],
+    'type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino', 'colore', 'tipologia', 'uvaggio', 'tipo prodotto', 'categoria prodotto', 'colore vino', 'tipologia vino', 'uvaggio vino', 'tipo vino prodotto'],
 }
 
 
