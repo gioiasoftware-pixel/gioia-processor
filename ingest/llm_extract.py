@@ -269,20 +269,113 @@ Testo:
             else:
                 wines = None
             
-            # Tentativo 3: Fix automatico JSON malformato
+            # Tentativo 3: Fix automatico JSON malformato (più aggressivo)
             if wines is None:
                 try:
-                    # Rimuovi caratteri problematici comuni
                     fixed_text = result_text
-                    # Chiudi stringhe non terminate (semplificato)
-                    # Rimuovi caratteri non-printable
-                    fixed_text = ''.join(char for char in fixed_text if char.isprintable() or char in '\n\r\t')
-                    # Tenta di fixare stringhe non chiuse aggiungendo virgolette
-                    # Questo è un fix molto semplice, potrebbe non funzionare sempre
-                    fixed_text = fixed_text.replace('"', '"').replace('"', '"')  # Normalizza virgolette
                     
-                    wines = json.loads(fixed_text)
-                    logger.info("[LLM_EXTRACT] JSON fixato automaticamente")
+                    # Step 1: Rimuovi caratteri non-printable (eccetto \n, \r, \t)
+                    fixed_text = ''.join(char for char in fixed_text if char.isprintable() or char in '\n\r\t')
+                    
+                    # Step 2: Normalizza virgolette
+                    fixed_text = fixed_text.replace('"', '"').replace('"', '"')
+                    
+                    # Step 3: Tenta di fixare stringhe non terminate usando regex
+                    # Cerca pattern: "text... senza virgolette di chiusura
+                    import re
+                    
+                    # Pattern per trovare stringhe non terminate: "text... senza "
+                    # Sostituisce con "text..." (aggiunge virgolette di chiusura prima della prossima virgola o })
+                    def fix_unterminated_string(match):
+                        content = match.group(1)
+                        # Se la stringa contiene caratteri problematici, escapa
+                        content = content.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+                        return f'"{content}"'
+                    
+                    # Trova tutte le stringhe che iniziano con " ma non finiscono con " prima di , o }
+                    # Pattern: "([^"]*?)(?=[,}\]\n]|$)
+                    # Ma questo è troppo complesso, meglio un approccio diverso
+                    
+                    # Step 4: Tenta parsing incrementale - estrai solo oggetti JSON validi
+                    # Usa un approccio stack-based per trovare oggetti JSON completi
+                    def find_json_objects(text):
+                        """Trova oggetti JSON completi usando stack-based matching."""
+                        objects = []
+                        stack = []
+                        start = -1
+                        in_string = False
+                        escape_next = False
+                        
+                        for i, char in enumerate(text):
+                            if escape_next:
+                                escape_next = False
+                                continue
+                            
+                            if char == '\\':
+                                escape_next = True
+                                continue
+                            
+                            if char == '"':
+                                in_string = not in_string
+                                continue
+                            
+                            if in_string:
+                                continue
+                            
+                            if char == '{':
+                                if not stack:
+                                    start = i
+                                stack.append(char)
+                            elif char == '}':
+                                if stack and stack[-1] == '{':
+                                    stack.pop()
+                                    if not stack:
+                                        # Oggetto completo trovato
+                                        obj_str = text[start:i+1]
+                                        objects.append(obj_str)
+                                        start = -1
+                        
+                        return objects
+                    
+                    matches = find_json_objects(fixed_text)
+                    
+                    if matches:
+                        valid_objects = []
+                        for obj_str in matches:
+                            try:
+                                # Aggiungi virgolette mancanti se necessario
+                                if not obj_str.strip().startswith('{'):
+                                    continue
+                                # Tenta parsing
+                                obj = json.loads(obj_str)
+                                valid_objects.append(obj)
+                            except json.JSONDecodeError:
+                                # Prova a fixare questo oggetto specifico
+                                try:
+                                    # Aggiungi virgolette di chiusura se mancanti
+                                    if obj_str.count('"') % 2 != 0:  # Numero dispari di virgolette
+                                        # Trova ultima virgoletta e aggiungi chiusura
+                                        last_quote = obj_str.rfind('"')
+                                        if last_quote > 0:
+                                            # Aggiungi " prima di }
+                                            fixed_obj = obj_str[:last_quote+1] + '"' + obj_str[last_quote+1:]
+                                            if fixed_obj.endswith('}'):
+                                                fixed_obj = fixed_obj[:-1] + '"}'
+                                            obj = json.loads(fixed_obj)
+                                            valid_objects.append(obj)
+                                except:
+                                    continue
+                        
+                        if valid_objects:
+                            wines = valid_objects
+                            logger.info(f"[LLM_EXTRACT] JSON fixato: estratti {len(valid_objects)} oggetti validi da {len(matches)} trovati")
+                        else:
+                            raise json.JSONDecodeError("Nessun oggetto valido estratto", fixed_text, 0)
+                    else:
+                        # Fallback: prova parsing diretto
+                        wines = json.loads(fixed_text)
+                        logger.info("[LLM_EXTRACT] JSON fixato automaticamente (parsing diretto)")
+                        
                 except (json.JSONDecodeError, Exception) as fix_error:
                     logger.error(f"[LLM_EXTRACT] Errore fix JSON automatico: {fix_error}")
                     logger.debug(f"[LLM_EXTRACT] Risposta AI (primi 1000 char): {result_text[:1000]}")
