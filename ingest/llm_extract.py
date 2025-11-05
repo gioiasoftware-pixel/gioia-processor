@@ -61,16 +61,57 @@ def prepare_text_input(
             # 'txt' è usato per testo OCR puro
             try:
                 # Prova encoding comuni
+                text_raw = None
+                encoding_used = None
                 for encoding in ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']:
                     try:
-                        text = file_content[:max_bytes].decode(encoding)
+                        text_raw = file_content[:max_bytes].decode(encoding)
+                        encoding_used = encoding
                         logger.debug(f"[LLM_EXTRACT] Text decoded with {encoding}")
-                        return text
+                        break
                     except (UnicodeDecodeError, LookupError):
                         continue
                 
-                # Fallback: utf-8 con errors='ignore'
-                text = file_content[:max_bytes].decode('utf-8', errors='ignore')
+                if text_raw is None:
+                    # Fallback: utf-8 con errors='ignore'
+                    text_raw = file_content[:max_bytes].decode('utf-8', errors='ignore')
+                    encoding_used = 'utf-8'
+                
+                # Per CSV: rimuovi header ripetuti e righe vuote eccessive per migliorare estrazione
+                if ext in ['csv', 'tsv']:
+                    lines = text_raw.split('\n')
+                    # Identifica header (prima riga con colonne tipiche)
+                    header_keywords = ['indice', 'id', 'etichetta', 'cantina', 'nome', 'name', 'winery', 'vintage', 'qty', 'quantità', 'prezzo', 'price']
+                    
+                    # Mantieni prima riga se è header, rimuovi duplicati
+                    cleaned_lines = []
+                    seen_headers = set()
+                    for line in lines:
+                        line_lower = line.lower()
+                        # Se è un header (contiene keyword e poche virgole/separatori)
+                        is_header = any(kw in line_lower for kw in header_keywords) and (',' in line or '|' in line or '\t' in line)
+                        
+                        if is_header:
+                            # Normalizza header per confronto (rimuovi spazi, lowercase)
+                            header_normalized = ' '.join(line_lower.split())
+                            if header_normalized not in seen_headers:
+                                seen_headers.add(header_normalized)
+                                # Mantieni solo primo header, rimuovi duplicati
+                                if len(seen_headers) == 1:
+                                    # Non includere header nel testo per LLM (AI lo ignora comunque)
+                                    continue
+                                else:
+                                    # Header duplicato, salta
+                                    continue
+                        else:
+                            # Riga dati normale
+                            cleaned_lines.append(line)
+                    
+                    text = '\n'.join(cleaned_lines)
+                    logger.info(f"[LLM_EXTRACT] CSV preparato: {len(lines)} righe originali → {len(cleaned_lines)} righe (header rimossi: {len(seen_headers)-1})")
+                else:
+                    text = text_raw
+                
                 return text
             except Exception as e:
                 logger.warning(f"[LLM_EXTRACT] Error decoding text: {e}")
@@ -174,12 +215,20 @@ async def extract_with_llm(text_chunk: str, telegram_id: Optional[int] = None, c
     try:
         client = get_openai_client()
         
-        # Prompt P3 (migliorato per evitare JSON malformato)
+        # Prompt P3 (migliorato per evitare JSON malformato e estrarre più vini)
         prompt = f"""Sei un estrattore di tabelle inventario vini.
 
 Obiettivo:
-- Dal testo fornito, estrai una lista di voci vino nel seguente schema JSON:
+- Dal testo fornito, estrai TUTTE le voci vino presenti nel seguente schema JSON:
   {{ "name": string, "winery": string|null, "vintage": int|null, "qty": int>=0, "price": float|null, "type": string|null }}
+
+Cosa estrarre:
+- Estrai TUTTE le righe che hanno almeno un nome vino (campo "Etichetta" o "name")
+- Se una riga ha nome vino ma altri campi vuoti, estrai comunque (usa null per campi mancanti)
+- Estrai anche righe con qty=0 (vini esauriti)
+- Se vedi righe header (es. "Indice,ID,Etichetta,Cantina..."), ignorale
+- Se vedi righe completamente vuote, ignorale
+- NON ignorare righe con nome vino valido, anche se hanno dati incompleti
 
 Regole CRITICHE per JSON valido:
 - ESCAPA tutte le virgolette nei valori: se il nome contiene " usa \\" (es. "Chianti" → "Chianti")
@@ -187,13 +236,14 @@ Regole CRITICHE per JSON valido:
 - ESCAPA backslash: usa \\\\ per rappresentare \\
 - Chiudi SEMPRE tutte le stringhe con virgolette doppie
 - "vintage" deve essere 1900–2099 oppure null (non stringa).
-- "qty" deve essere un intero (es. "12 bottiglie" → 12).
+- "qty" deve essere un intero (es. "12 bottiglie" → 12, "0" → 0).
 - "price" in EUR: accetta virgola (es. 8,50 → 8.5). Se assente → null.
 - "type": una di [Rosso, Bianco, Rosato, Spumante, Altro]; se incerto → null.
-- Ignora righe che non siano vini (totali, note, sconti).
-- Output SOLO JSON array valido, nessun testo extra, nessun commento.
 
-IMPORTANTE: Verifica che il JSON sia valido prima di inviarlo. Usa un validator JSON se necessario.
+IMPORTANTE: 
+- Estrai TUTTE le righe con nome vino, non solo quelle "complete"
+- Verifica che il JSON sia valido prima di inviarlo
+- Output SOLO JSON array valido, nessun testo extra, nessun commento
 
 Testo:
 <<<
