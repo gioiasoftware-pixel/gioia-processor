@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from core.config import get_config, validate_config
-from core.database import create_tables, get_db, ProcessingJob
+from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables
 from core.logger import setup_colored_logging
 from api.routers import ingest, snapshot
 from api.routers import movements
@@ -178,6 +178,37 @@ async def get_job_status(job_id: str):
     except Exception as e:
         logger.error(f"Error getting job status: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/create-tables")
+async def create_user_tables(
+    telegram_id: int = Form(...),
+    business_name: str = Form(...)
+):
+    """
+    Crea tabelle utente nel processor (compatibilità con bot).
+    
+    Mantiene compatibilità endpoint esistente per onboarding.
+    """
+    try:
+        async for db in get_db():
+            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            
+            logger.info(
+                f"Tabelle create per telegram_id={telegram_id}, "
+                f"business_name={business_name}: {list(user_tables.keys())}"
+            )
+            
+            return {
+                "status": "success",
+                "telegram_id": telegram_id,
+                "business_name": business_name,
+                "tables": user_tables
+            }
+            
+    except Exception as e:
+        logger.error(f"Error creating user tables: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error creating tables: {str(e)}")
 
 
 # (Endpoint /process-movement migrato in api/routers/movements.py)
