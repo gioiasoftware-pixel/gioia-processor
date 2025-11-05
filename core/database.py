@@ -207,15 +207,16 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
             """)
             await session.execute(create_inventario)
             
-            # Crea indici per performance
-            create_indexes = sql_text(f"""
-                CREATE INDEX IF NOT EXISTS idx_{telegram_id}_name ON {table_inventario} (name);
-                CREATE INDEX IF NOT EXISTS idx_{telegram_id}_winery ON {table_inventario} (producer);
-                CREATE INDEX IF NOT EXISTS idx_{telegram_id}_vintage ON {table_inventario} (vintage);
-                CREATE INDEX IF NOT EXISTS idx_{telegram_id}_type ON {table_inventario} (wine_type);
-                CREATE INDEX IF NOT EXISTS idx_{telegram_id}_updated ON {table_inventario} (updated_at);
-            """)
-            await session.execute(create_indexes)
+            # Crea indici per performance (esegui separatamente per asyncpg)
+            indexes = [
+                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_name ON {table_inventario} (name)",
+                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_winery ON {table_inventario} (producer)",
+                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_vintage ON {table_inventario} (vintage)",
+                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_type ON {table_inventario} (wine_type)",
+                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_updated ON {table_inventario} (updated_at)"
+            ]
+            for index_sql in indexes:
+                await session.execute(sql_text(index_sql))
             
             # Crea tabella INVENTARIO backup
             create_backup = sql_text(f"""
