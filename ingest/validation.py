@@ -4,7 +4,7 @@ Validation (Pydantic models) per Stage 1.
 Definisce WineItemModel e funzioni di validazione batch.
 """
 import logging
-from typing import List, Dict, Any, Optional, Literal
+from typing import List, Dict, Any, Optional, Literal, Tuple
 from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
