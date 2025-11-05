@@ -222,13 +222,23 @@ Obiettivo:
 - Dal testo fornito, estrai TUTTE le voci vino presenti nel seguente schema JSON:
   {{ "name": string, "winery": string|null, "vintage": int|null, "qty": int>=0, "price": float|null, "type": string|null }}
 
-Cosa estrarre:
-- Estrai TUTTE le righe che hanno almeno un nome vino (campo "Etichetta" o "name")
-- Se una riga ha nome vino ma altri campi vuoti, estrai comunque (usa null per campi mancanti)
-- Estrai anche righe con qty=0 (vini esauriti)
-- Se vedi righe header (es. "Indice,ID,Etichetta,Cantina..."), ignorale
-- Se vedi righe completamente vuote, ignorale
-- NON ignorare righe con nome vino valido, anche se hanno dati incompleti
+Cosa estrarre (IMPORTANTE - LEGGI ATTENTAMENTE):
+- Estrai TUTTE le righe che hanno un nome vino valido (campo "Etichetta" o colonna con nome vino)
+- NON ignorare righe con dati parziali - se c'è un nome vino, estrai SEMPRE
+- Estrai anche righe con qty=0 o qty vuoto (usa 0 se non specificato)
+- Estrai anche righe senza prezzo (usa null)
+- Estrai anche righe senza cantina (usa null)
+- Estrai anche righe senza annata (usa null)
+- Se vedi righe header (es. "Indice,ID,Etichetta,Cantina..."), ignorale SOLO se sono chiaramente header
+- Se vedi righe completamente vuote (solo virgole o separatori), ignorale
+- Se una riga ha almeno: nome vino + (cantina O qty O prezzo O annata), estrai SEMPRE
+- Se vedi righe con "nan", "NULL", "none" come nome vino, ignorale (sono placeholder)
+- Se vedi righe con nome vino valido ma altri campi vuoti/null, estrai comunque
+
+CONTEGGIO ATTESO:
+- Il file dovrebbe contenere circa 140-150 righe con dati vino validi
+- Estrai TUTTE queste righe, non solo quelle "complete"
+- Se estrai meno di 100 righe, probabilmente stai ignorando righe valide
 
 Regole CRITICHE per JSON valido:
 - ESCAPA tutte le virgolette nei valori: se il nome contiene " usa \\" (es. "Chianti" → "Chianti")
@@ -256,12 +266,12 @@ Testo:
             messages=[
                 {
                     "role": "system",
-                    "content": "Sei un estrattore di tabelle inventario vini. Estrai dati vini da testo. Rispondi SOLO con JSON array."
+                    "content": "Sei un estrattore di tabelle inventario vini. Estrai TUTTE le righe con dati vino validi da testo, anche se incomplete. Non ignorare righe valide. Rispondi SOLO con JSON array."
                 },
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=4000
+            max_tokens=6000  # Aumentato per permettere più vini
         )
         
         # Alert costi LLM se necessario
