@@ -148,11 +148,30 @@ def parse_classic(
                 # Normalizza valori
                 normalized_row = normalize_values(row_dict)
                 
-                # Aggiungi solo se ha name (obbligatorio)
-                if normalized_row.get('name'):
+                # Filtra righe vuote: name deve essere valido e non placeholder
+                name = normalized_row.get('name', '').strip()
+                is_valid_name = (
+                    name and 
+                    len(name) > 0 and 
+                    name.lower() not in ['nan', 'none', 'null', 'n/a', 'na', 'undefined']
+                )
+                
+                # Verifica anche che non sia una riga completamente vuota
+                # (se name è valido ma tutti gli altri campi sono vuoti, potrebbe essere un header/separatore)
+                has_other_data = (
+                    normalized_row.get('winery') or 
+                    normalized_row.get('qty', 0) > 0 or 
+                    normalized_row.get('price') is not None or
+                    normalized_row.get('vintage') is not None
+                )
+                
+                if is_valid_name and (has_other_data or len(name) > 2):  # Permetti name solo se ha altri dati o è abbastanza lungo
                     wines_data.append(normalized_row)
                 else:
-                    logger.debug(f"[PARSER] Riga {index} scartata: name vuoto (dati: {row_dict.get('name', 'N/A')[:50]})")
+                    logger.debug(
+                        f"[PARSER] Riga {index} scartata: name invalido o riga vuota "
+                        f"(name='{name[:30]}', has_other_data={has_other_data})"
+                    )
             except Exception as e:
                 logger.warning(f"[PARSER] Error normalizing row {index}: {e}")
                 continue

@@ -623,11 +623,31 @@ async def extract_llm_mode(
                 logger.debug(f"[LLM_EXTRACT] Normalizzando vino {idx+1}/{len(deduplicated_wines)}: {wine.get('name', 'N/A')[:50]}")
                 normalized = normalize_values(wine)
                 logger.debug(f"[LLM_EXTRACT] Vino normalizzato: name={normalized.get('name')}, qty={normalized.get('qty')}, price={normalized.get('price')}")
-                if normalized.get('name'):  # Solo se ha name
+                
+                # Filtra righe vuote: name deve essere valido e non placeholder
+                name = normalized.get('name', '').strip()
+                is_valid_name = (
+                    name and 
+                    len(name) > 0 and 
+                    name.lower() not in ['nan', 'none', 'null', 'n/a', 'na', 'undefined']
+                )
+                
+                # Verifica anche che non sia una riga completamente vuota
+                has_other_data = (
+                    normalized.get('winery') or 
+                    normalized.get('qty', 0) > 0 or 
+                    normalized.get('price') is not None or
+                    normalized.get('vintage') is not None
+                )
+                
+                if is_valid_name and (has_other_data or len(name) > 2):  # Permetti name solo se ha altri dati o è abbastanza lungo
                     normalized_wines.append(normalized)
                     logger.debug(f"[LLM_EXTRACT] Vino aggiunto a normalized_wines (totale: {len(normalized_wines)})")
                 else:
-                    logger.warning(f"[LLM_EXTRACT] Vino scartato: name vuoto dopo normalizzazione")
+                    logger.warning(
+                        f"[LLM_EXTRACT] Vino scartato: name invalido o riga vuota "
+                        f"(name='{name[:30]}', has_other_data={has_other_data})"
+                    )
             except Exception as e:
                 logger.warning(f"[LLM_EXTRACT] Errore normalizzazione vino {idx+1}: {e}", exc_info=True)
                 continue

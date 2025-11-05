@@ -349,9 +349,21 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     normalized = {}
     
-    # Name (trim)
+    # Name (trim e pulizia)
     if 'name' in row:
-        normalized['name'] = str(row['name']).strip() if row['name'] else ""
+        name_raw = row['name']
+        # Controlla NaN prima
+        if is_na(name_raw):
+            normalized['name'] = ""
+        else:
+            name_str = str(name_raw).strip()
+            # Filtra valori placeholder comuni
+            if name_str.lower() in ['nan', 'none', 'null', 'n/a', 'na', '', 'undefined']:
+                normalized['name'] = ""
+            else:
+                normalized['name'] = name_str
+    else:
+        normalized['name'] = ""
     
     # Winery (trim, opzionale)
     if 'winery' in row:
