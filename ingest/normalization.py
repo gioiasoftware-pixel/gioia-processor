@@ -27,8 +27,18 @@ COLUMN_MAPPINGS_EXTENDED = {
     'vintage': ['annata', 'year', 'vintage', 'anno', 'anno produzione', 'vintage year', 'anno vendemmia', 'vendemmia', 'yr', 'vintage year', 'anno vinificazione', 'year vintage', 'vintage yr', 'anno prod', 'prod year', 'anno vino'],
     'winery': ['produttore', 'producer', 'winery', 'azienda', 'casa vinicola', 'marca', 'brand', 'cantina', 'fattoria', 'azienda vinicola', 'casa produttrice', 'casa', 'produttore vino', 'azienda produttrice', 'casa vinicola', 'marca vino', 'brand vino', 'cantina produttrice', 'fattoria vinicola'],
     'qty': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta', 'qta_magazzino', 'qta magazzino', 'qta', 'disp', 'disponibilità', 'stock', 'q iniziale', 'q. iniziale', 'quantità iniziale', 'q iniz', 'q. iniz', 'q iniziale magazzino', 'quantità iniz', 'q iniziale stock', 'q iniz', 'q cantina', 'quantità disponibile', 'q disponibile', 'q disponibile magazzino', 'scorta disponibile', 'pezzi disponibili', 'bottiglie disponibili', 'quantità stock', 'q stock', 'disponibilità magazzino', 'q.ty', 'qty.', 'qty disponibile', 'quantità iniz', 'q iniz magazzino'],
-    'price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta', 'listino', 'prezzo listino', 'prezzo_unit_eur', 'prezzo unit eur', 'prezzo unitario', 'prezzo unit', 'eur', 'euro', 'costo', 'valore', 'prezzo fornitore', 'prezzo unitario eur', 'prezzo unitario euro', 'prezzo vendita eur', 'prezzo vendita euro', 'listino prezzo', 'prezzo listino eur', 'costo unitario', 'valore unitario', 'prezzo pz', 'prezzo pezzo', 'prezzo bottiglia', 'eur pz', 'euro pz', 'eur pezzo', 'euro pezzo'],
-    'type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino', 'colore', 'tipologia', 'uvaggio', 'tipo prodotto', 'categoria prodotto', 'colore vino', 'tipologia vino', 'uvaggio vino', 'tipo vino prodotto'],
+    'price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta', 'listino', 'prezzo listino', 'prezzo_unit_eur', 'prezzo unit eur', 'prezzo unitario', 'prezzo unit', 'eur', 'euro', 'valore', 'prezzo unitario eur', 'prezzo unitario euro', 'prezzo vendita eur', 'prezzo vendita euro', 'listino prezzo', 'prezzo listino eur', 'valore unitario', 'prezzo pz', 'prezzo pezzo', 'prezzo bottiglia', 'eur pz', 'euro pz', 'eur pezzo', 'euro pezzo', 'selling price', 'prezzo vendita'],
+    'type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino', 'colore', 'tipologia', 'tipo prodotto', 'categoria prodotto', 'colore vino', 'tipologia vino', 'tipo vino prodotto'],
+    # Nuovi campi aggiunti
+    'grape_variety': ['uvaggio', 'grape variety', 'grape', 'varietà', 'varietà uve', 'uve', 'uvaggi', 'vitigno', 'vitigni', 'grape variety', 'grape_variety', 'varietà uva', 'tipologia uve', 'uvaggio vino'],
+    'region': ['regione', 'region', 'area', 'zona', 'territorio', 'terroir', 'regione produzione', 'zona produzione', 'area produzione'],
+    'country': ['nazione', 'country', 'paese', 'nazione produzione', 'paese origine', 'origine', 'provenienza', 'nazione origine'],
+    'supplier': ['fornitore', 'supplier', 'fornitore vino', 'importatore', 'distributore', 'fornitura', 'supplier name', 'fornitore nome'],
+    'classification': ['denominazione', 'classification', 'classificazione', 'docg', 'doc', 'igt', 'vdt', 'igp', 'aoc', 'aop', 'vqa', 'denominazione origine', 'denominazione di origine', 'do', 'dop', 'igp', 'igt', 'vdt', 'vino da tavola'],
+    'cost_price': ['costo', 'cost', 'costo unitario', 'costo fornitore', 'prezzo fornitore', 'costo acquisto', 'prezzo acquisto', 'costo pz', 'costo pezzo', 'costo bottiglia', 'cost price', 'prezzo costo', 'costo unit', 'costo unitario eur', 'costo unitario euro'],
+    'alcohol_content': ['alcol', 'alcohol', 'gradazione', 'gradazione alcolica', 'alcohol content', 'abv', 'vol', 'volume', 'vol%', 'alcol %', 'gradazione %', 'alcohol %', 'alcool', 'alcool %'],
+    'description': ['descrizione', 'description', 'descrizione prodotto', 'descrizione vino', 'note descrittive', 'dettagli', 'caratteristiche'],
+    'notes': ['note', 'notes', 'osservazioni', 'annotazioni', 'note aggiuntive', 'note prodotto', 'commenti'],
 }
 
 
@@ -336,17 +346,82 @@ def normalize_wine_type(value: Any) -> Optional[str]:
     return None
 
 
-def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_string_field(value: Any) -> Optional[str]:
     """
-    Normalizza valori riga secondo schema WineItemModel.
-    
-    Applica normalizzazione a: vintage, qty, price, type.
+    Normalizza campo stringa opzionale.
     
     Args:
-        row: Dict con dati riga (chiavi possono essere mappate a name, winery, vintage, qty, price, type)
+        value: Valore originale
     
     Returns:
-        Dict con valori normalizzati (chiavi: name, winery, vintage, qty, price, type)
+        Stringa normalizzata o None
+    """
+    if is_na(value):
+        return None
+    if value is None:
+        return None
+    value_str = str(value).strip()
+    if not value_str or value_str.lower() in ['nan', 'none', 'null', 'n/a', 'na', '', 'undefined']:
+        return None
+    return value_str
+
+
+def normalize_alcohol_content(value: Any) -> Optional[float]:
+    """
+    Normalizza gradazione alcolica.
+    
+    Estrae percentuale (es. "14.5%", "14.5", "14,5" → 14.5)
+    
+    Args:
+        value: Valore originale
+    
+    Returns:
+        Gradazione (0-100) o None
+    """
+    if is_na(value):
+        return None
+    if value is None:
+        return None
+    
+    if isinstance(value, (int, float)):
+        import math
+        if math.isnan(value):
+            return None
+        alc = float(value)
+        return alc if 0 <= alc <= 100 else None
+    
+    value_str = str(value).strip()
+    if not value_str:
+        return None
+    
+    # Rimuovi simboli % e spazi
+    value_str = re.sub(r'[%\s]', '', value_str)
+    # Sostituisci virgola con punto
+    value_str = value_str.replace(',', '.')
+    
+    # Estrai numero
+    match = re.search(r'\d+\.?\d*', value_str)
+    if match:
+        try:
+            alc = float(match.group())
+            return alc if 0 <= alc <= 100 else None
+        except ValueError:
+            pass
+    
+    return None
+
+
+def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalizza valori riga secondo schema WineItemModel esteso.
+    
+    Applica normalizzazione a tutti i campi: vintage, qty, price, type, grape_variety, region, country, etc.
+    
+    Args:
+        row: Dict con dati riga (chiavi possono essere mappate a vari campi)
+    
+    Returns:
+        Dict con valori normalizzati (tutti i campi WineItemModel)
     """
     normalized = {}
     
@@ -369,7 +444,7 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
     # Winery (trim, opzionale)
     if 'winery' in row:
         winery = row['winery']
-        normalized['winery'] = str(winery).strip() if winery else None
+        normalized['winery'] = normalize_string_field(winery)
     
     # Vintage (regex 19xx|20xx → int, fuori range = null)
     if 'vintage' in row:
@@ -383,7 +458,7 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
     else:
         normalized['qty'] = 0
     
-    # Price (estrai float, gestisci virgola europea)
+    # Price (estrai float, gestisci virgola europea) - prezzo vendita
     if 'price' in row:
         normalized['price'] = normalize_price(row['price'])
     else:
@@ -394,6 +469,43 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
         normalized['type'] = normalize_wine_type(row['type'])
     else:
         normalized['type'] = None
+    
+    # Nuovi campi aggiuntivi
+    # Grape variety (uvaggio)
+    if 'grape_variety' in row:
+        normalized['grape_variety'] = normalize_string_field(row['grape_variety'])
+    
+    # Region (regione)
+    if 'region' in row:
+        normalized['region'] = normalize_string_field(row['region'])
+    
+    # Country (nazione)
+    if 'country' in row:
+        normalized['country'] = normalize_string_field(row['country'])
+    
+    # Supplier (fornitore)
+    if 'supplier' in row:
+        normalized['supplier'] = normalize_string_field(row['supplier'])
+    
+    # Classification (denominazione)
+    if 'classification' in row:
+        normalized['classification'] = normalize_string_field(row['classification'])
+    
+    # Cost price (costo)
+    if 'cost_price' in row:
+        normalized['cost_price'] = normalize_price(row['cost_price'])
+    
+    # Alcohol content (gradazione alcolica)
+    if 'alcohol_content' in row:
+        normalized['alcohol_content'] = normalize_alcohol_content(row['alcohol_content'])
+    
+    # Description (descrizione)
+    if 'description' in row:
+        normalized['description'] = normalize_string_field(row['description'])
+    
+    # Notes (note)
+    if 'notes' in row:
+        normalized['notes'] = normalize_string_field(row['notes'])
     
     return normalized
 

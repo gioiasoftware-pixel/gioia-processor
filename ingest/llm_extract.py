@@ -219,8 +219,24 @@ async def extract_with_llm(text_chunk: str, telegram_id: Optional[int] = None, c
         prompt = f"""Sei un estrattore di tabelle inventario vini.
 
 Obiettivo:
-- Dal testo fornito, estrai TUTTE le voci vino presenti nel seguente schema JSON:
-  {{ "name": string, "winery": string|null, "vintage": int|null, "qty": int>=0, "price": float|null, "type": string|null }}
+- Dal testo fornito, estrai TUTTE le voci vino presenti nel seguente schema JSON completo:
+  {{ 
+    "name": string, 
+    "winery": string|null, 
+    "vintage": int|null, 
+    "qty": int>=0, 
+    "price": float|null, 
+    "type": string|null,
+    "grape_variety": string|null,
+    "region": string|null,
+    "country": string|null,
+    "supplier": string|null,
+    "classification": string|null,
+    "cost_price": float|null,
+    "alcohol_content": float|null,
+    "description": string|null,
+    "notes": string|null
+  }}
 
 Cosa estrarre (IMPORTANTE - LEGGI ATTENTAMENTE):
 - Estrai TUTTE le righe che hanno un nome vino valido (campo "Etichetta" o colonna con nome vino)
@@ -229,6 +245,8 @@ Cosa estrarre (IMPORTANTE - LEGGI ATTENTAMENTE):
 - Estrai anche righe senza prezzo (usa null)
 - Estrai anche righe senza cantina (usa null)
 - Estrai anche righe senza annata (usa null)
+- Estrai TUTTI i campi disponibili (uvaggio, regione, nazione, fornitore, denominazione, costo, gradazione, descrizione, note)
+- Se un campo non è presente nella riga, usa null (NON omettere il campo)
 - Se vedi righe header (es. "Indice,ID,Etichetta,Cantina..."), ignorale SOLO se sono chiaramente header
 - Se vedi righe completamente vuote (solo virgole o separatori), ignorale
 - Se una riga ha almeno: nome vino + (cantina O qty O prezzo O annata), estrai SEMPRE
@@ -247,8 +265,12 @@ Regole CRITICHE per JSON valido:
 - Chiudi SEMPRE tutte le stringhe con virgolette doppie
 - "vintage" deve essere 1900–2099 oppure null (non stringa).
 - "qty" deve essere un intero (es. "12 bottiglie" → 12, "0" → 0).
-- "price" in EUR: accetta virgola (es. 8,50 → 8.5). Se assente → null.
+- "price" (prezzo vendita) in EUR: accetta virgola (es. 8,50 → 8.5). Se assente → null.
+- "cost_price" (prezzo costo) in EUR: accetta virgola (es. 6,50 → 6.5). Se assente → null.
+- "alcohol_content" (gradazione alcolica) in %: accetta virgola (es. 14,5 → 14.5). Range 0-100. Se assente → null.
 - "type": una di [Rosso, Bianco, Rosato, Spumante, Altro]; se incerto → null.
+- "classification": può essere DOCG, DOC, IGT, VdT, IGP, AOC, AOP, VQA, o altro. Se assente → null.
+- Tutti gli altri campi stringa: se assenti o vuoti → null (NON omettere).
 
 IMPORTANTE: 
 - Estrai TUTTE le righe con nome vino, non solo quelle "complete"

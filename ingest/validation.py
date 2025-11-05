@@ -15,16 +15,27 @@ class WineItemModel(BaseModel):
     Modello Pydantic v2 per riga inventario vino.
     
     Schema conforme a "Update processor.md" - Sezione "Schema dati target".
+    Esteso con tutti i campi del database.
     """
     name: str = Field(..., min_length=1, description="Nome vino (obbligatorio, min 1 char)")
     winery: Optional[str] = Field(None, description="Produttore/cantina (opzionale)")
     vintage: Optional[int] = Field(None, ge=1900, le=2099, description="Annata (1900-2099 o null)")
     qty: int = Field(default=0, ge=0, description="Quantità bottiglie (>= 0, default 0)")
-    price: Optional[float] = Field(None, ge=0.0, description="Prezzo unitario (>= 0 o null)")
+    price: Optional[float] = Field(None, ge=0.0, description="Prezzo vendita unitario (>= 0 o null)")
     type: Optional[Literal["Rosso", "Bianco", "Rosato", "Spumante", "Altro"]] = Field(
         None, 
         description="Tipo vino (enum o null)"
     )
+    # Campi aggiuntivi per database completo
+    grape_variety: Optional[str] = Field(None, description="Uvaggio (varietà uve, opzionale)")
+    region: Optional[str] = Field(None, description="Regione (opzionale)")
+    country: Optional[str] = Field(None, description="Nazione (opzionale)")
+    supplier: Optional[str] = Field(None, description="Fornitore (opzionale)")
+    classification: Optional[str] = Field(None, description="Denominazione (DOCG/DOC/IGT/VdT, opzionale)")
+    cost_price: Optional[float] = Field(None, ge=0.0, description="Prezzo costo (>= 0 o null)")
+    alcohol_content: Optional[float] = Field(None, ge=0.0, le=100.0, description="Gradazione alcolica % (0-100 o null)")
+    description: Optional[str] = Field(None, description="Descrizione (opzionale)")
+    notes: Optional[str] = Field(None, description="Note (opzionale)")
     
     @field_validator('name')
     @classmethod
@@ -78,7 +89,16 @@ class WineItemModel(BaseModel):
                 "vintage": 2018,
                 "qty": 6,
                 "price": 42.5,
-                "type": "Rosso"
+                "type": "Rosso",
+                "grape_variety": "Nebbiolo",
+                "region": "Piemonte",
+                "country": "Italia",
+                "supplier": "Importatore XYZ",
+                "classification": "DOCG",
+                "cost_price": 35.0,
+                "alcohol_content": 14.5,
+                "description": "Barolo di grande struttura",
+                "notes": "Da consumare entro 2025"
             }
         }
     }
