@@ -327,6 +327,7 @@ async def process_inventory_background(
                 # Esegue dopo che il job è marcato come completed, non blocca il flusso
                 async def run_post_processing():
                     """Task background per normalizzazione post-processing"""
+                    db_session = None
                     try:
                         logger.info(
                             f"[POST_PROCESSING] Job {job_id}: Avvio normalizzazione "
@@ -334,9 +335,11 @@ async def process_inventory_background(
                         )
                         
                         # Usa una nuova sessione per il post-processing
-                        async for db_session in get_db():
-                            from post_processing import normalize_saved_inventory
-                            
+                        # IMPORTANTE: Non usare async for, usa direttamente AsyncSessionLocal per mantenere la sessione aperta
+                        from core.database import AsyncSessionLocal
+                        from post_processing import normalize_saved_inventory
+                        
+                        async with AsyncSessionLocal() as db_session:
                             stats = await normalize_saved_inventory(
                                 session=db_session,
                                 telegram_id=telegram_id,
@@ -344,17 +347,27 @@ async def process_inventory_background(
                                 job_id=job_id
                             )
                             
+                            # Commit finale esplicito per assicurarsi che tutte le modifiche siano salvate
+                            await db_session.commit()
+                            
                             logger.info(
                                 f"[POST_PROCESSING] Job {job_id}: Normalizzazione completata - "
-                                f"{stats['normalized_count']}/{stats['total_wines']} vini normalizzati"
+                                f"{stats['normalized_count']}/{stats['total_wines']} vini normalizzati, "
+                                f"{stats.get('llm_corrections_applied', 0)} correzioni LLM applicate"
                             )
-                            break
                     except Exception as post_error:
                         # Non bloccare il flusso principale se post-processing fallisce
                         logger.warning(
                             f"[POST_PROCESSING] Job {job_id}: Errore post-processing "
-                            f"(non critico): {post_error}"
+                            f"(non critico): {post_error}",
+                            exc_info=True
                         )
+                        # Rollback in caso di errore
+                        if db_session:
+                            try:
+                                await db_session.rollback()
+                            except:
+                                pass
                 
                 # Avvia post-processing in background (non blocca)
                 asyncio.create_task(run_post_processing())
