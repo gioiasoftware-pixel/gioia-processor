@@ -253,9 +253,11 @@ async def process_movement(
     quantity: int = Form(...)
 ):
     """
-    Crea job movimento e ritorna job_id. Elaborazione in background.
-    Mantiene compatibilità con endpoint legacy.
+    Crea job movimento e elabora SINCRONAMENTE (come vecchia versione).
+    Ritorna risultato immediatamente senza bisogno di polling.
     """
+    import uuid
+    
     try:
         logger.info(
             f"Creating movement job for telegram_id: {telegram_id}, business: {business_name}, {movement_type} {quantity} {wine_name}"
@@ -266,7 +268,6 @@ async def process_movement(
         if quantity <= 0:
             raise HTTPException(status_code=400, detail="quantity deve essere > 0")
 
-        import uuid
         job_id = str(uuid.uuid4())
 
         async for db in get_db():
@@ -283,8 +284,12 @@ async def process_movement(
             await db.commit()
             break
 
-        asyncio.create_task(
-            process_movement_background(
+        logger.info(f"Movement job {job_id} created, processing synchronously")
+        
+        # ✅ Elabora movimento in modo SINCRONO (operazioni veloci, < 1 secondo)
+        # Questo permette al bot di ricevere immediatamente il risultato
+        try:
+            await process_movement_background(
                 job_id=job_id,
                 telegram_id=telegram_id,
                 business_name=business_name,
@@ -292,13 +297,60 @@ async def process_movement(
                 movement_type=movement_type,
                 quantity=quantity
             )
-        )
-
-        return {
-            "status": "processing",
-            "job_id": job_id,
-            "message": "Elaborazione movimento avviata. Usa /status/{job_id} per verificare lo stato."
-        }
+            
+            # Recupera risultato dal job completato
+            async for db in get_db():
+                stmt = select(ProcessingJob).where(ProcessingJob.job_id == job_id)
+                result = await db.execute(stmt)
+                job = result.scalar_one()
+                
+                if job.status == 'completed':
+                    # Job completato con successo
+                    result_data = json.loads(job.result_data) if job.result_data else {}
+                    return {
+                        "status": "success",
+                        "job_id": job_id,
+                        "wine_name": result_data.get("wine_name", wine_name),
+                        "quantity": quantity,
+                        "quantity_before": result_data.get("quantity_before", 0),
+                        "quantity_after": result_data.get("quantity_after", 0),
+                        "movement_type": movement_type,
+                        "telegram_id": telegram_id,
+                        "message": f"Movimento {movement_type} completato con successo"
+                    }
+                elif job.status == 'error':
+                    # Job fallito
+                    return {
+                        "status": "error",
+                        "job_id": job_id,
+                        "error": job.error_message or "Errore sconosciuto durante l'elaborazione",
+                        "error_message": job.error_message or "Errore sconosciuto durante l'elaborazione",
+                        "telegram_id": telegram_id
+                    }
+                else:
+                    # Stato inatteso
+                    return {
+                        "status": "error",
+                        "job_id": job_id,
+                        "error": f"Stato job inatteso: {job.status}",
+                        "error_message": f"Stato job inatteso: {job.status}",
+                        "telegram_id": telegram_id
+                    }
+                break
+        except Exception as e:
+            logger.error(
+                f"Error processing movement synchronously: {e} | "
+                f"telegram_id={telegram_id}, wine_name={wine_name}, "
+                f"movement_type={movement_type}, quantity={quantity}",
+                exc_info=True
+            )
+            return {
+                "status": "error",
+                "job_id": job_id,
+                "error": f"Errore durante elaborazione: {str(e)}",
+                "error_message": f"Errore durante elaborazione: {str(e)}",
+                "telegram_id": telegram_id
+            }
 
     except HTTPException:
         raise
