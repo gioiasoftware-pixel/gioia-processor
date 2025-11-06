@@ -13,10 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from core.config import get_config, validate_config
-from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables
+from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables, AsyncSessionLocal
 from core.logger import setup_colored_logging
 from api.routers import ingest, snapshot
 from api.routers import movements
+from ingest.learned_terms_manager import load_learned_terms_set, load_learned_terms_dict
+from ingest.wine_terms_dict import set_learned_terms
 
 # Configurazione logging colorato
 setup_colored_logging("processor")
@@ -52,6 +54,19 @@ async def startup_event():
         # Crea tabelle database
         await create_tables()
         logger.info("Database tables created successfully")
+        
+        # Carica termini problematici appresi dal database
+        try:
+            async with AsyncSessionLocal() as session:
+                learned_terms_set = await load_learned_terms_set(session)
+                learned_terms_dict = await load_learned_terms_dict(session)
+                set_learned_terms(learned_terms_set, learned_terms_dict)
+                logger.info(
+                    f"Loaded {len(learned_terms_set)} learned problematic terms from database "
+                    f"for wine name filtering"
+                )
+        except Exception as learned_error:
+            logger.warning(f"Error loading learned terms (continuing anyway): {learned_error}")
         
         # Verifica configurazione AI
         openai_key = os.getenv("OPENAI_API_KEY")

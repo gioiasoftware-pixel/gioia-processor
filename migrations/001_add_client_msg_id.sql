@@ -21,3 +21,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_user_client
 -- Indici aggiuntivi per performance
 CREATE INDEX IF NOT EXISTS idx_jobs_user_status_created
   ON processing_jobs (telegram_id, status, created_at DESC);
+
+
+

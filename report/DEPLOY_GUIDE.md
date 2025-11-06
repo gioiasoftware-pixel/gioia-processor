@@ -411,3 +411,6 @@ curl -X POST https://your-app.railway.app/process-inventory \
 **Data**: 2025-01-XX  
 **Status**: ✅ **PRONTO PER DEPLOY**
 
+
+
+

@@ -189,3 +189,6 @@
 **Data**: 2025-01-XX  
 **Status**: ✅ **PRONTO PER DEPLOY** (dopo commit/push)
 
+
+
+

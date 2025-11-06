@@ -9,9 +9,11 @@ Usato da:
 - Stage 1 (normalization.py) - Filtro nomi vino
 - Stage 3 (llm_extract.py) - Prompt LLM
 - Post-processing (post_processing.py) - Validazione e correzione
+
+Integrato con learned_terms_manager per caricare anche termini appresi dall'LLM.
 """
 import re
-from typing import Optional
+from typing import Optional, Set, Dict, Any
 
 # ============================================================================
 # CATEGORIE SPUMANTI / CHAMPAGNE
@@ -161,12 +163,44 @@ CATEGORY_TO_WINE_TYPE = {
 # FUNZIONI HELPER
 # ============================================================================
 
-def is_problematic_term(term: str) -> bool:
+# Cache per termini appresi dal database (caricati all'avvio o on-demand)
+_learned_terms_cache: Set[str] = set()
+_learned_terms_dict_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def set_learned_terms(learned_terms_set: Set[str], learned_terms_dict: Dict[str, Dict[str, Any]] = None):
+    """
+    Imposta la cache dei termini appresi dal database.
+    
+    Args:
+        learned_terms_set: Set di termini problematici appresi (lowercase)
+        learned_terms_dict: Dict opzionale con dettagli (corrected_term, wine_type, category)
+    """
+    global _learned_terms_cache, _learned_terms_dict_cache
+    _learned_terms_cache = learned_terms_set
+    if learned_terms_dict:
+        _learned_terms_dict_cache = learned_terms_dict
+
+
+def get_learned_terms_cache() -> Set[str]:
+    """Ritorna la cache dei termini appresi."""
+    return _learned_terms_cache
+
+
+def get_learned_terms_dict_cache() -> Dict[str, Dict[str, Any]]:
+    """Ritorna la cache dettagliata dei termini appresi."""
+    return _learned_terms_dict_cache
+
+
+def is_problematic_term(term: str, use_learned: bool = True) -> bool:
     """
     Verifica se un termine è problematico (categoria/tipologia invece di nome vino).
     
+    Controlla sia il dizionario statico che i termini appresi dal database.
+    
     Args:
         term: Termine da verificare
+        use_learned: Se True, controlla anche i termini appresi dal database
     
     Returns:
         True se è un termine problematico, False altrimenti
@@ -179,8 +213,12 @@ def is_problematic_term(term: str) -> bool:
     # Rimuovi caratteri speciali per confronto
     term_normalized = re.sub(r'[^\w\s]', '', term_lower).strip()
     
-    # Verifica esatta
+    # Verifica esatta nel dizionario statico
     if term_normalized in ALL_PROBLEMATIC_TERMS:
+        return True
+    
+    # Verifica nei termini appresi (se abilitato)
+    if use_learned and term_normalized in _learned_terms_cache:
         return True
     
     # Verifica parziale (es. "Bolle Brut" contiene "bolle" e "brut")
@@ -189,16 +227,25 @@ def is_problematic_term(term: str) -> bool:
         problematic_words = [w for w in words if w in ALL_PROBLEMATIC_TERMS and len(w) > 2]
         if len(problematic_words) == len(words):  # Tutte le parole sono problematiche
             return True
+        
+        # Verifica anche nei termini appresi
+        if use_learned:
+            learned_problematic_words = [w for w in words if w in _learned_terms_cache and len(w) > 2]
+            if len(learned_problematic_words) == len(words):
+                return True
     
     return False
 
 
-def infer_wine_type_from_category(category: str) -> Optional[str]:
+def infer_wine_type_from_category(category: str, use_learned: bool = True) -> Optional[str]:
     """
     Infers tipo vino da categoria/tipologia.
     
+    Controlla sia il dizionario statico che i termini appresi dal database.
+    
     Args:
         category: Categoria/tipologia (es. "Bolle", "Rosè", "Brut")
+        use_learned: Se True, controlla anche i termini appresi dal database
     
     Returns:
         Tipo vino inferito (es. "Spumante", "Rosato") o None
@@ -208,14 +255,26 @@ def infer_wine_type_from_category(category: str) -> Optional[str]:
     
     category_lower = category.lower().strip()
     
-    # Cerca match esatto
+    # Cerca match esatto nel dizionario statico
     if category_lower in CATEGORY_TO_WINE_TYPE:
         return CATEGORY_TO_WINE_TYPE[category_lower]
     
-    # Cerca match parziale
+    # Cerca nei termini appresi (se abilitato)
+    if use_learned and category_lower in _learned_terms_dict_cache:
+        learned_data = _learned_terms_dict_cache[category_lower]
+        if learned_data.get("wine_type"):
+            return learned_data["wine_type"]
+    
+    # Cerca match parziale nel dizionario statico
     for term, wine_type in CATEGORY_TO_WINE_TYPE.items():
         if term in category_lower:
             return wine_type
+    
+    # Cerca match parziale nei termini appresi
+    if use_learned:
+        for learned_term, learned_data in _learned_terms_dict_cache.items():
+            if learned_term in category_lower and learned_data.get("wine_type"):
+                return learned_data["wine_type"]
     
     return None
 

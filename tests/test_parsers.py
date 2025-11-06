@@ -105,3 +105,6 @@ class TestExcelParser:
         assert info['sheet_name'] == 'Sheet2'  # Dovrebbe selezionare Sheet2 con più righe
         assert info['rows'] == 4
 
+
+
+

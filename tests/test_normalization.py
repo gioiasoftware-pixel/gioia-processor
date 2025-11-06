@@ -155,3 +155,6 @@ class TestValueNormalization:
         assert normalized["price"] == 18.50
         assert normalized["type"] == "Rosso"
 
+
+
+

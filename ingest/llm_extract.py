@@ -266,6 +266,7 @@ TERMINI CHE NON DEVONO ESSERE NOMI VINO (usa winery come nome se disponibile):
 - Regioni: "Toscana", "Piemonte", "Veneto", "Sicilia", "Bordeaux", "Bourgogne", etc.
 - Classificazioni: "DOC", "DOCG", "IGT", "AOC", "AOP", "IGP"
 - Termini tecnici: "Riserva", "Classico", "Superiore", "Vintage", "Barrique"
+- Termini appresi: Il sistema ha già appreso altri termini problematici dal database che non sono nel dizionario statico.
 - Se il nome è SOLO uno di questi termini (senza parentesi), usa il campo "winery" come nome e imposta "type" appropriato
 - Se vedi righe header (es. "Indice,ID,Etichetta,Cantina..."), ignorale SOLO se sono chiaramente header
 - Se vedi righe completamente vuote (solo virgole o separatori), ignorale

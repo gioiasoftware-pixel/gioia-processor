@@ -85,3 +85,6 @@ def parse_excel(file_content: bytes) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         logger.error(f"[EXCEL_PARSER] Error parsing Excel: {e}")
         raise ValueError(f"Errore parsing Excel: {str(e)}")
 
+
+
+

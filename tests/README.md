@@ -85,3 +85,6 @@ Vedi `conftest.py` per fixture comuni (mock_config, sample_csv_content, etc.).
 - I test **non richiedono** pytesseract installato (usano mock)
 - Tutti i test sono **idempotenti** e possono essere eseguiti in parallelo
 
+
+
+

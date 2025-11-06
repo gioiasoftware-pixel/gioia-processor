@@ -225,3 +225,6 @@
 
 Tutti i criteri di accettazione sono stati soddisfatti. Il processor è pronto per il deploy in produzione.
 
+
+
+

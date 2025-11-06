@@ -71,13 +71,20 @@ class ProcessingJob(Base):
     
     # Metadati
     created_at = Column(DateTime, default=datetime.utcnow)
-    started_at = Column(DateTime)
-    completed_at = Column(DateTime)
-    processing_method = Column(String(50))
+
+
+class LearnedProblematicTerm(Base):
+    """Termini problematici appresi dall'LLM durante il post-processing"""
+    __tablename__ = 'learned_problematic_terms'
     
-    # Idempotenza
-    client_msg_id = Column(String(200))
-    update_id = Column(Integer)
+    id = Column(Integer, primary_key=True)
+    problematic_term = Column(String(200), nullable=False, unique=True, index=True)
+    corrected_term = Column(String(200), nullable=False)  # Termine corretto o traduzione
+    wine_type = Column(String(50))  # Tipo vino inferito (opzionale)
+    category = Column(String(100))  # Categoria (es. "categoria spumante", "tipo vino", etc.)
+    usage_count = Column(Integer, default=1)  # Quante volte è stato riconosciuto
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # Configurazione database
@@ -450,8 +457,52 @@ async def create_tables():
                     
             except Exception as migrate_error:
                 logger.warning(f"Auto-migration for processing_jobs skipped: {migrate_error}")
+            
+            # Crea tabella learned_problematic_terms se non esiste
+            try:
+                check_learned_table = sql_text("""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = 'learned_problematic_terms'
+                """)
+                result = await conn.execute(check_learned_table)
+                learned_table_exists = result.scalar() is not None
+                
+                if not learned_table_exists:
+                    create_learned_table = sql_text("""
+                        CREATE TABLE learned_problematic_terms (
+                            id SERIAL PRIMARY KEY,
+                            problematic_term VARCHAR(200) NOT NULL UNIQUE,
+                            corrected_term VARCHAR(200) NOT NULL,
+                            wine_type VARCHAR(50),
+                            category VARCHAR(100),
+                            usage_count INTEGER DEFAULT 1,
+                            first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    await conn.execute(create_learned_table)
+                    
+                    # Crea indici
+                    create_idx_term = sql_text("""
+                        CREATE INDEX IF NOT EXISTS idx_learned_term 
+                        ON learned_problematic_terms (problematic_term)
+                    """)
+                    await conn.execute(create_idx_term)
+                    
+                    create_idx_category = sql_text("""
+                        CREATE INDEX IF NOT EXISTS idx_learned_category 
+                        ON learned_problematic_terms (category)
+                    """)
+                    await conn.execute(create_idx_category)
+                    
+                    logger.info("Created learned_problematic_terms table with indexes")
+                else:
+                    logger.debug("Table learned_problematic_terms already exists")
+            except Exception as learned_error:
+                logger.warning(f"Creation of learned_problematic_terms table skipped: {learned_error}")
         
-        logger.info("Database tables created successfully (public schema): users, processing_jobs")
+        logger.info("Database tables created successfully (public schema): users, processing_jobs, learned_problematic_terms")
         logger.info("Note: Tabelle inventario vengono create per-utente nello schema public via ensure_user_tables()")
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")

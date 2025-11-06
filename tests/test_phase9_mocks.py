@@ -325,3 +325,6 @@ class TestExecutionWithoutExternalKeys:
             wines_data, metrics, decision, stage_used = result
             assert decision == 'error'  # OCR disabilitato → errore
 
+
+
+

@@ -23,6 +23,7 @@ from ingest.wine_terms_dict import (
     infer_wine_type_from_category,
     get_category_description
 )
+from ingest.learned_terms_manager import save_learned_term
 
 logger = logging.getLogger(__name__)
 
@@ -305,13 +306,15 @@ ERRORI DA CERCARE:
 3. Tipi vino mancanti o errati (inferisci da nome se possibile)
 4. Dati incoerenti (vintage fuori range 1900-2099, prezzi negativi, etc.)
 
-TERMINI PROBLEMATICI (usa dizionario wine_terms_dict):
+TERMINI PROBLEMATICI (usa dizionario wine_terms_dict + termini appresi dal database):
 - Categorie spumanti: Bolle, Spumante, Champagne, Prosecco, Brut, Cava, Crémant, Frizzante
 - Tipi vino: Rosso, Bianco, Rosato, Rosè, Passito, Dolce, Secco
 - Regioni: Toscana, Piemonte, Veneto, Sicilia, Bordeaux, Bourgogne, etc.
 - Classificazioni: DOC, DOCG, IGT, AOC, AOP, IGP
 - Termini tecnici: Riserva, Classico, Superiore, Vintage, Barrique
+- Termini appresi: Il sistema ha già appreso altri termini problematici dal database che non sono nel dizionario statico.
 Se il nome è SOLO uno di questi termini, usa "producer" come nome e imposta "wine_type" appropriato.
+Se identifichi un NUOVO termine problematico non nel dizionario, includilo nella risposta per salvarlo nel database.
 
 IMPORTANTE - IDENTIFICA PATTERN COMUNI:
 Se vedi lo stesso errore ripetuto in molti vini (es. molti vini con "Bolle" come nome), identifica il PATTERN e suggerisci una correzione batch.
@@ -824,7 +827,52 @@ async def normalize_saved_inventory(
                 try:
                     wine_index = correction.get("wine_index")
                     field = correction.get("field")
+                    old_value = correction.get("old_value", "")
                     new_value = correction.get("new_value")
+                    reason = correction.get("reason", "")
+                    
+                    # ✅ Salva termini problematici appresi dall'LLM
+                    if field == "name" and old_value and new_value:
+                        old_lower = old_value.lower().strip()
+                        # Verifica se è un termine problematico NON nel dizionario statico
+                        if not is_problematic_term(old_lower, use_learned=False):  # Solo dizionario statico
+                            # Potrebbe essere un nuovo termine problematico appreso
+                            # Salva se la ragione indica che è una categoria/tipo
+                            if any(keyword in reason.lower() for keyword in ["categoria", "tipo", "regione", "classificazione", "termine tecnico"]):
+                                # Estrai tipo vino dalla correzione se presente
+                                inferred_type = None
+                                if "spumante" in reason.lower() or "bolle" in old_lower:
+                                    inferred_type = "Spumante"
+                                elif "rosato" in reason.lower() or "rosè" in old_lower or "rosé" in old_lower:
+                                    inferred_type = "Rosato"
+                                elif "bianco" in reason.lower():
+                                    inferred_type = "Bianco"
+                                elif "rosso" in reason.lower():
+                                    inferred_type = "Rosso"
+                                
+                                # Determina categoria
+                                category = None
+                                if "categoria" in reason.lower() or "spumante" in reason.lower():
+                                    category = "categoria spumante"
+                                elif "tipo" in reason.lower():
+                                    category = "tipo vino"
+                                elif "regione" in reason.lower():
+                                    category = "regione"
+                                elif "classificazione" in reason.lower():
+                                    category = "classificazione"
+                                
+                                # Salva termine appreso
+                                await save_learned_term(
+                                    session,
+                                    problematic_term=old_lower,
+                                    corrected_term=new_value.strip(),
+                                    wine_type=inferred_type,
+                                    category=category
+                                )
+                                logger.debug(
+                                    f"[POST_PROCESSING] Job {job_id}: Salvato termine appreso: "
+                                    f"'{old_lower}' → '{new_value}' (type={inferred_type}, category={category})"
+                                )
                     
                     if wine_index is None or field is None or new_value is None:
                         continue

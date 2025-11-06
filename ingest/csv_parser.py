@@ -172,3 +172,6 @@ def parse_csv(
         logger.error(f"[CSV_PARSER] Error parsing CSV: {e}")
         raise ValueError(f"Errore parsing CSV: {str(e)}")
 
+
+
+

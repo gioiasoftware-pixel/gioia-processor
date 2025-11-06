@@ -163,3 +163,6 @@ class TestIngestFlow:
             # Verifica che log_json sia stato chiamato
             assert mock_log.called
 
+
+
+

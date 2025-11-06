@@ -169,3 +169,6 @@ class TestBatchValidation:
         assert stats["rows_valid"] == 0
         assert stats["rows_rejected"] == 0
 
+
+
+
