@@ -20,96 +20,204 @@ HEADER_KEYWORDS = [
     'gradazione', 'alcohol', 'descrizione', 'description', 'note', 'note'
 ]
 
-# Keywords per identificare header di sezioni produttori/cantine
-PRODUCER_SECTION_KEYWORDS = [
-    'produttore', 'producer', 'cantina', 'winery', 'casa', 'azienda', 'domaine', 'chateau',
-    'marca', 'brand', 'fornitore', 'supplier', 'rappresentato', 'rappresentati'
-]
+# Mapping completo campi database → keyword per identificare righe header/sezioni
+# Usato per riconoscere righe che sono valori di campi specifici (non vini)
+DATABASE_FIELD_KEYWORDS = {
+    'winery': [
+        'produttore', 'producer', 'cantina', 'winery', 'casa', 'azienda', 'domaine', 'chateau',
+        'marca', 'brand', 'casa vinicola', 'fattoria', 'azienda vinicola', 'casa produttrice',
+        'produttore vino', 'azienda produttrice', 'marca vino', 'brand vino', 'cantina produttrice',
+        'fattoria vinicola', 'casa vinicola', 'domaine', 'château', 'chateau'
+    ],
+    'name': [
+        'nome', 'name', 'vino', 'wine', 'wine name', 'nome vino', 'denominazione', 'etichetta',
+        'prodotto', 'articolo', 'descrizione', 'titolo', 'label', 'nome prodotto', 'denominazione vino'
+    ],
+    'grape_variety': [
+        'uvaggio', 'grape', 'grape variety', 'varietà', 'varietà uve', 'vitigno', 'vitigni',
+        'ceppo', 'ceppi', 'uva', 'uve', 'grape variety', 'varietà uva', 'uvaggio vino',
+        'vitigno principale', 'varietà principale', 'grape varietal', 'varietal'
+    ],
+    'region': [
+        'regione', 'region', 'zona', 'area', 'territorio', 'terroir', 'zona di produzione',
+        'area di produzione', 'territorio di produzione', 'zona vinicola', 'area vinicola',
+        'territorio vinicolo', 'zona geografica', 'area geografica', 'territorio geografico'
+    ],
+    'country': [
+        'nazione', 'country', 'paese', 'nazione di origine', 'paese di origine', 'origine',
+        'nazione produzione', 'paese produzione', 'nazione vinicola', 'paese vinicolo',
+        'nazione di produzione', 'paese di produzione', 'nazione origine', 'paese origine'
+    ],
+    'supplier': [
+        'fornitore', 'supplier', 'rappresentato', 'rappresentati', 'rappresentante',
+        'importatore', 'distributore', 'fornitore vino', 'supplier wine', 'importatore vino',
+        'distributore vino', 'fornitore principale', 'supplier principale', 'rappresentato da',
+        'rappresentati da', 'importato da', 'distribuito da', 'fornito da'
+    ],
+    'classification': [
+        'classificazione', 'classification', 'denominazione', 'denomination', 'doc', 'docg',
+        'igt', 'igp', 'vdt', 'aoc', 'aop', 'do', 'doca', 'denominazione di origine',
+        'denominazione origine', 'classificazione vino', 'denominazione vino', 'docg vino',
+        'doc vino', 'igt vino', 'igp vino', 'vdt vino', 'aoc vino', 'aop vino'
+    ],
+    'type': [
+        'tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino',
+        'colore', 'color', 'stile', 'style', 'tipo prodotto', 'categoria prodotto'
+    ],
+    'vintage': [
+        'vintage', 'annata', 'anno', 'year', 'anno produzione', 'vintage year',
+        'anno vendemmia', 'vendemmia', 'yr', 'anno vinificazione', 'year vintage'
+    ],
+    'alcohol_content': [
+        'gradazione', 'alcohol', 'alcohol content', 'gradazione alcolica', 'alcol',
+        'percentuale alcolica', 'alcohol %', 'alc %', 'gradazione %', 'alcohol content %',
+        'percentuale alcol', 'alcol %', 'gradazione alcol', 'alcohol percentage'
+    ],
+    'description': [
+        'descrizione', 'description', 'note descrittive', 'descrizione vino', 'description wine',
+        'note prodotto', 'descrizione prodotto', 'descrizione articolo', 'note articolo'
+    ],
+    'notes': [
+        'note', 'notes', 'osservazioni', 'observations', 'note aggiuntive', 'note extra',
+        'note vino', 'notes wine', 'osservazioni vino', 'note prodotto', 'notes product'
+    ]
+}
 
-# Keywords per identificare righe che sono produttori (non vini)
-PRODUCER_ROW_KEYWORDS = [
-    'produttore', 'producer', 'cantina', 'winery', 'casa', 'azienda', 'domaine', 'chateau',
-    'marca', 'brand', 'fornitore', 'supplier', 'rappresentato', 'rappresentati', 'rappresentante'
-]
+# Keywords per identificare header di sezioni (qualsiasi campo database)
+SECTION_HEADER_KEYWORDS = []
+for field_keywords in DATABASE_FIELD_KEYWORDS.values():
+    SECTION_HEADER_KEYWORDS.extend(field_keywords)
+SECTION_HEADER_KEYWORDS = list(set(SECTION_HEADER_KEYWORDS))  # Rimuovi duplicati
+
+# Keywords per identificare righe che sono valori di campi (non vini)
+FIELD_VALUE_ROW_KEYWORDS = SECTION_HEADER_KEYWORDS.copy()
 
 
-def is_producer_section_header(row: List[str]) -> bool:
+def detect_field_from_row(row: List[str]) -> Optional[str]:
     """
-    Verifica se una riga è un header di sezione produttori/cantine.
+    Identifica quale campo database rappresenta questa riga (se è un header di sezione).
     
     Args:
         row: Lista di valori della riga
     
     Returns:
-        True se la riga sembra essere un header di sezione produttori
+        Nome campo database (es. 'winery', 'region', 'grape_variety') o None
     """
     if len(row) < 1:
-        return False
+        return None
     
-    # Controlla se contiene keyword di sezione produttori
-    for cell in row:
-        if not cell or str(cell).strip() == '':
-            continue
-        
-        cell_lower = str(cell).strip().lower()
-        for keyword in PRODUCER_SECTION_KEYWORDS:
-            if keyword in cell_lower:
-                # Verifica che non sia un header normale (non ha molte colonne)
-                if len([c for c in row if c and str(c).strip()]) <= 3:
-                    return True
+    # Conta colonne non vuote
+    non_empty_cells = [c for c in row if c and str(c).strip()]
     
-    return False
-
-
-def is_producer_row(row: List[str], current_producer: Optional[str] = None) -> bool:
-    """
-    Verifica se una riga rappresenta un produttore (non un vino).
-    
-    Una riga è un produttore se:
-    - Contiene keyword di produttore E ha poche colonne con dati
-    - O è una riga con solo testo (probabilmente nome produttore)
-    - O ha un pattern tipico di intestazione produttore
-    
-    Args:
-        row: Lista di valori della riga
-        current_producer: Produttore corrente (per confronto)
-    
-    Returns:
-        True se la riga sembra essere un produttore
-    """
-    if len(row) < 1:
-        return False
-    
-    # Conta colonne con dati significativi
-    non_empty_cells = [c for c in row if c and str(c).strip() and str(c).strip().lower() not in ['nan', 'none', 'null', '']]
-    
-    # Se ha solo 1-2 colonne con dati, potrebbe essere un produttore
-    if len(non_empty_cells) <= 2:
-        # Verifica se contiene keyword di produttore
+    # Se ha poche colonne (<= 3), potrebbe essere un header di sezione
+    if len(non_empty_cells) <= 3:
+        # Controlla ogni cella per keyword di campi database
         for cell in non_empty_cells:
             cell_lower = str(cell).strip().lower()
-            for keyword in PRODUCER_ROW_KEYWORDS:
-                if keyword in cell_lower:
-                    return True
-        
-        # Se è una riga con solo testo (probabilmente nome produttore)
-        # e non contiene numeri o pattern di vino
-        first_cell = non_empty_cells[0] if non_empty_cells else ''
-        if first_cell:
-            # Non è un produttore se contiene pattern tipici di vino (anno, quantità, prezzo)
-            has_wine_pattern = (
-                bool(re.search(r'\b(19|20)\d{2}\b', first_cell)) or  # Anno
-                bool(re.search(r'\d+\s*(bott|pezzi|pz|qty)', first_cell, re.I)) or  # Quantità
-                bool(re.search(r'€|\d+[,.]\d+', first_cell))  # Prezzo
-            )
             
-            if not has_wine_pattern and len(first_cell) > 3:
-                # Potrebbe essere un produttore se non è già il produttore corrente
-                if current_producer and first_cell.lower() == current_producer.lower():
-                    return False  # È lo stesso produttore, non una nuova riga produttore
-                return True
+            # Cerca match in tutti i campi database
+            for field_name, keywords in DATABASE_FIELD_KEYWORDS.items():
+                for keyword in keywords:
+                    if keyword in cell_lower:
+                        logger.debug(
+                            f"[HEADER_DETECTOR] Riga identificata come header '{field_name}': "
+                            f"keyword '{keyword}' trovata in '{cell_lower}'"
+                        )
+                        return field_name
     
-    return False
+    return None
+
+
+def is_section_header_row(row: List[str]) -> bool:
+    """
+    Verifica se una riga è un header di sezione (qualsiasi campo database).
+    
+    Args:
+        row: Lista di valori della riga
+    
+    Returns:
+        True se la riga sembra essere un header di sezione
+    """
+    return detect_field_from_row(row) is not None
+
+
+def detect_field_value_row(
+    row: List[str],
+    current_field_values: Dict[str, str]
+) -> Optional[Tuple[str, str]]:
+    """
+    Identifica se una riga rappresenta un valore di campo database (non un vino).
+    
+    Una riga è un valore di campo se:
+    - Ha poche colonne con dati (1-2)
+    - Non contiene pattern tipici di vino (anno, quantità, prezzo)
+    - Potrebbe essere un valore di campo (produttore, regione, uvaggio, etc.)
+    
+    Args:
+        row: Lista di valori della riga
+        current_field_values: Dict con valori correnti dei campi (per evitare duplicati)
+    
+    Returns:
+        Tuple (field_name, field_value) se è un valore di campo, None altrimenti
+    """
+    if len(row) < 1:
+        return None
+    
+    # Conta colonne con dati significativi
+    non_empty_cells = [
+        c for c in row 
+        if c and str(c).strip() and str(c).strip().lower() not in ['nan', 'none', 'null', '']
+    ]
+    
+    # Se ha solo 1-2 colonne con dati, potrebbe essere un valore di campo
+    if len(non_empty_cells) <= 2:
+        first_cell = non_empty_cells[0] if non_empty_cells else ''
+        
+        if not first_cell or len(first_cell) < 2:
+            return None
+        
+        # Non è un valore di campo se contiene pattern tipici di vino
+        has_wine_pattern = (
+            bool(re.search(r'\b(19|20)\d{2}\b', first_cell)) or  # Anno
+            bool(re.search(r'\d+\s*(bott|pezzi|pz|qty|quantità)', first_cell, re.I)) or  # Quantità
+            bool(re.search(r'€|\d+[,.]\d+\s*(eur|euro|€)', first_cell, re.I))  # Prezzo
+        )
+        
+        if has_wine_pattern:
+            return None  # È probabilmente un vino, non un valore di campo
+        
+        # Verifica se è già un valore corrente (evita duplicati)
+        first_cell_lower = first_cell.lower().strip()
+        for field_name, current_value in current_field_values.items():
+            if current_value and first_cell_lower == current_value.lower().strip():
+                return None  # È lo stesso valore, non una nuova riga
+        
+        # Prova a identificare il campo guardando il contesto
+        # Se la riga contiene keyword di un campo, è probabilmente quel campo
+        for field_name, keywords in DATABASE_FIELD_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in first_cell_lower:
+                    # Verifica che non sia solo una keyword (deve essere un valore)
+                    if len(first_cell) > len(keyword) + 2:  # Valore più lungo della keyword
+                        logger.debug(
+                            f"[HEADER_DETECTOR] Riga identificata come valore '{field_name}': "
+                            f"'{first_cell}' (keyword '{keyword}' trovata)"
+                        )
+                        return (field_name, first_cell.strip())
+        
+        # Se non ha keyword ma è solo testo senza pattern vino, potrebbe essere un valore generico
+        # Prova a inferire il campo dal contesto (se abbiamo già altri valori)
+        # Per ora, se è solo testo senza pattern, assumiamo che sia winery (più comune)
+        if len(first_cell) > 3 and not has_wine_pattern:
+            # Potrebbe essere winery, region, grape_variety, etc.
+            # Per sicurezza, proviamo winery (più comune come header di sezione)
+            logger.debug(
+                f"[HEADER_DETECTOR] Riga identificata come possibile valore 'winery': "
+                f"'{first_cell}' (solo testo, nessun pattern vino)"
+            )
+            return ('winery', first_cell.strip())
+    
+    return None
 
 
 def is_header_row(row: List[str], min_columns: int = 3) -> bool:
@@ -272,13 +380,14 @@ def split_file_by_headers(
         return [(0, file_content)]
 
 
-def process_section_with_producers(
+def process_section_with_field_values(
     section_lines: List[str],
     separator: str,
     encoding: str
 ) -> pd.DataFrame:
     """
-    Processa una sezione CSV riconoscendo righe produttori e applicandole ai vini successivi.
+    Processa una sezione CSV riconoscendo righe che sono valori di campi database
+    (produttore, regione, uvaggio, nazione, etc.) e applicandole ai vini successivi.
     
     Args:
         section_lines: Righe della sezione (prima riga è header)
@@ -286,7 +395,7 @@ def process_section_with_producers(
         encoding: Encoding file
     
     Returns:
-        DataFrame con vini processati (winery applicato da righe produttore)
+        DataFrame con vini processati (campi applicati da righe header)
     """
     if len(section_lines) < 2:
         return pd.DataFrame()
@@ -295,11 +404,12 @@ def process_section_with_producers(
     header_line = section_lines[0]
     header_columns = [c.strip() for c in header_line.split(separator)]
     
-    # Verifica se è una sezione produttori
-    is_producer_section = is_producer_section_header(header_columns)
+    # Identifica tipo sezione (se è un header di campo specifico)
+    section_field = detect_field_from_row(header_columns)
     
     wines_data = []
-    current_producer = None
+    # Mantieni valori correnti per tutti i campi database
+    current_field_values: Dict[str, str] = {}
     
     # Processa righe dati
     for line_idx, line in enumerate(section_lines[1:], start=1):
@@ -308,22 +418,19 @@ def process_section_with_producers(
         
         row = [c.strip() for c in line.split(separator)]
         
-        # Verifica se è una riga produttore
-        if is_producer_row(row, current_producer):
-            # Estrai nome produttore (prima colonna non vuota)
-            producer_name = None
-            for cell in row:
-                if cell and cell.strip() and cell.strip().lower() not in ['nan', 'none', 'null', '']:
-                    producer_name = cell.strip()
-                    break
+        # Verifica se è una riga valore di campo (non un vino)
+        field_value = detect_field_value_row(row, current_field_values)
+        
+        if field_value:
+            field_name, field_value_str = field_value
+            # Aggiorna valore corrente del campo
+            current_field_values[field_name] = field_value_str
             
-            if producer_name:
-                current_producer = producer_name
-                logger.debug(
-                    f"[HEADER_DETECTOR] Trovato produttore nella sezione: '{current_producer}' "
-                    f"(riga {line_idx})"
-                )
-            continue  # Salta riga produttore, non è un vino
+            logger.debug(
+                f"[HEADER_DETECTOR] Trovato valore campo '{field_name}': '{field_value_str}' "
+                f"(riga {line_idx})"
+            )
+            continue  # Salta riga valore campo, non è un vino
         
         # È una riga vino: crea dict con dati
         wine_dict = {}
@@ -333,24 +440,49 @@ def process_section_with_producers(
             else:
                 wine_dict[col_name] = ''
         
-        # Applica produttore corrente se disponibile e winery non presente
-        if current_producer:
-            # Se winery non è presente o è vuoto, usa produttore corrente
-            winery_col = None
-            for col in ['winery', 'cantina', 'producer', 'produttore']:
-                if col in wine_dict:
-                    winery_col = col
+        # Applica valori correnti dei campi se non presenti nel vino
+        for field_name, field_value_str in current_field_values.items():
+            if not field_value_str:
+                continue
+            
+            # Trova colonna corrispondente al campo
+            field_col = None
+            field_keywords = DATABASE_FIELD_KEYWORDS.get(field_name, [])
+            
+            # Cerca colonna che corrisponde al campo
+            for col_name in wine_dict.keys():
+                col_lower = str(col_name).lower().strip()
+                for keyword in field_keywords:
+                    if keyword in col_lower:
+                        field_col = col_name
+                        break
+                if field_col:
                     break
             
-            if not winery_col or not wine_dict.get(winery_col) or wine_dict[winery_col].strip() == '':
-                # Aggiungi colonna winery se non esiste
-                if 'winery' not in wine_dict:
-                    wine_dict['winery'] = current_producer
-                else:
-                    wine_dict[winery_col] = current_producer
+            # Se colonna non trovata o vuota, aggiungi/aggiorna
+            if not field_col:
+                # Usa nome campo standard se non esiste colonna corrispondente
+                standard_field_names = {
+                    'winery': 'winery',
+                    'region': 'region',
+                    'country': 'country',
+                    'grape_variety': 'grape_variety',
+                    'supplier': 'supplier',
+                    'classification': 'classification',
+                    'type': 'type',
+                    'alcohol_content': 'alcohol_content',
+                    'description': 'description',
+                    'notes': 'notes'
+                }
+                field_col = standard_field_names.get(field_name, field_name)
+            
+            # Applica valore se colonna è vuota o non esiste
+            if field_col not in wine_dict or not wine_dict.get(field_col) or wine_dict[field_col].strip() == '':
+                wine_dict[field_col] = field_value_str
                 
                 logger.debug(
-                    f"[HEADER_DETECTOR] Applicato produttore '{current_producer}' al vino riga {line_idx}"
+                    f"[HEADER_DETECTOR] Applicato campo '{field_name}'='{field_value_str}' "
+                    f"al vino riga {line_idx}"
                 )
         
         wines_data.append(wine_dict)
@@ -363,7 +495,7 @@ def process_section_with_producers(
     
     logger.info(
         f"[HEADER_DETECTOR] Sezione processata: {len(wines_data)} vini, "
-        f"produttore corrente: {current_producer or 'N/A'}"
+        f"campi applicati: {list(current_field_values.keys())}"
     )
     
     return df
@@ -442,8 +574,8 @@ def parse_csv_with_multiple_headers(
             if len(section_lines) < 2:
                 continue
             
-            # Processa sezione riconoscendo righe produttori
-            df_section = process_section_with_producers(section_lines, separator, encoding)
+            # Processa sezione riconoscendo righe valori campi database
+            df_section = process_section_with_field_values(section_lines, separator, encoding)
             
             if len(df_section) > 0:
                 all_dataframes.append(df_section)

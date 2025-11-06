@@ -127,10 +127,59 @@ COMMON_NON_WINE_TERMS = {
     # Prezzi / Valori
     'prezzo', 'costo', 'valore', 'euro', 'eur', '€',
     # Generici
-    'vino', 'vini', 'wine', 'wines', 'produttore', 'cantina',
-    'fornitore', 'importatore', 'distributore',
+    'vino', 'vini', 'wine', 'wines',
     # Placeholder
     'da definire', 'tbd', 'to be defined', 'n/a', 'na',
+}
+
+# ============================================================================
+# TERMINI HEADER CAMPI DATABASE (non devono essere nomi vino)
+# ============================================================================
+DATABASE_FIELD_HEADERS = {
+    # Produttore/Cantina
+    'produttore', 'producer', 'cantina', 'winery', 'casa', 'azienda', 'domaine', 'chateau',
+    'château', 'marca', 'brand', 'casa vinicola', 'fattoria', 'azienda vinicola', 'casa produttrice',
+    'produttore vino', 'azienda produttrice', 'marca vino', 'brand vino', 'cantina produttrice',
+    'fattoria vinicola',
+    # Nome vino
+    'nome', 'name', 'vino', 'wine', 'wine name', 'nome vino', 'denominazione', 'etichetta',
+    'prodotto', 'articolo', 'descrizione', 'titolo', 'label', 'nome prodotto', 'denominazione vino',
+    # Uvaggio
+    'uvaggio', 'grape', 'grape variety', 'varietà', 'varietà uve', 'vitigno', 'vitigni',
+    'ceppo', 'ceppi', 'uva', 'uve', 'varietà uva', 'uvaggio vino', 'vitigno principale',
+    'varietà principale', 'grape varietal', 'varietal',
+    # Regione
+    'regione', 'region', 'zona', 'area', 'territorio', 'terroir', 'zona di produzione',
+    'area di produzione', 'territorio di produzione', 'zona vinicola', 'area vinicola',
+    'territorio vinicolo', 'zona geografica', 'area geografica', 'territorio geografico',
+    # Nazione
+    'nazione', 'country', 'paese', 'nazione di origine', 'paese di origine', 'origine',
+    'nazione produzione', 'paese produzione', 'nazione vinicola', 'paese vinicolo',
+    'nazione di produzione', 'paese di produzione', 'nazione origine', 'paese origine',
+    # Fornitore
+    'fornitore', 'supplier', 'rappresentato', 'rappresentati', 'rappresentante',
+    'importatore', 'distributore', 'fornitore vino', 'supplier wine', 'importatore vino',
+    'distributore vino', 'fornitore principale', 'supplier principale', 'rappresentato da',
+    'rappresentati da', 'importato da', 'distribuito da', 'fornito da',
+    # Classificazione
+    'classificazione', 'classification', 'denominazione', 'denomination', 'doc', 'docg',
+    'igt', 'igp', 'vdt', 'aoc', 'aop', 'do', 'doca', 'denominazione di origine',
+    'denominazione origine', 'classificazione vino', 'denominazione vino',
+    # Tipo vino
+    'tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino',
+    'colore', 'color', 'stile', 'style', 'tipo prodotto', 'categoria prodotto',
+    # Annata
+    'vintage', 'annata', 'anno', 'year', 'anno produzione', 'vintage year',
+    'anno vendemmia', 'vendemmia', 'yr', 'anno vinificazione', 'year vintage',
+    # Gradazione
+    'gradazione', 'alcohol', 'alcohol content', 'gradazione alcolica', 'alcol',
+    'percentuale alcolica', 'alcohol %', 'alc %', 'gradazione %', 'alcohol content %',
+    'percentuale alcol', 'alcol %', 'gradazione alcol', 'alcohol percentage',
+    # Descrizione/Note
+    'descrizione', 'description', 'note descrittive', 'descrizione vino', 'description wine',
+    'note prodotto', 'descrizione prodotto', 'descrizione articolo', 'note articolo',
+    'note', 'notes', 'osservazioni', 'observations', 'note aggiuntive', 'note extra',
+    'note vino', 'notes wine', 'osservazioni vino', 'notes product',
 }
 
 # ============================================================================
@@ -143,7 +192,8 @@ ALL_PROBLEMATIC_TERMS = (
     INTERNATIONAL_REGIONS |
     CLASSIFICATIONS |
     TECHNICAL_TERMS |
-    COMMON_NON_WINE_TERMS
+    COMMON_NON_WINE_TERMS |
+    DATABASE_FIELD_HEADERS
 )
 
 # ============================================================================
