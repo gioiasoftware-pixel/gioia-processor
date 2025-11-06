@@ -180,6 +180,51 @@ def infer_country_from_region(region: Optional[str]) -> Optional[str]:
     return None
 
 
+def is_invalid_wine_name(name: Optional[str], winery: Optional[str], qty: int, price: Optional[float]) -> bool:
+    """
+    Verifica se un nome vino è invalido.
+    
+    Criteri per nome invalido:
+    1. Vuoto o None
+    2. Placeholder ('nan', 'none', 'null', etc.)
+    3. Solo numeri (es. "0", "1", "10", "255")
+    4. Troppo corto (< 2 caratteri) E senza altri dati significativi
+    
+    Args:
+        name: Nome vino
+        winery: Produttore (opzionale)
+        qty: Quantità
+        price: Prezzo (opzionale)
+    
+    Returns:
+        True se il nome è invalido, False altrimenti
+    """
+    if not name or not name.strip():
+        return True
+    
+    name_clean = name.strip()
+    
+    # Placeholder comuni
+    if name_clean.lower() in ['nan', 'none', 'null', 'n/a', 'na', 'undefined', '', ' ']:
+        return True
+    
+    # Solo numeri (es. "0", "1", "10", "255")
+    if name_clean.isdigit():
+        return True
+    
+    # Troppo corto (< 2 caratteri) E senza altri dati significativi
+    if len(name_clean) < 2:
+        has_meaningful_data = (
+            (winery and winery.strip()) or
+            qty > 0 or
+            price is not None
+        )
+        if not has_meaningful_data:
+            return True
+    
+    return False
+
+
 async def normalize_saved_inventory(
     session: AsyncSession,
     telegram_id: int,
@@ -190,10 +235,11 @@ async def normalize_saved_inventory(
     Normalizza inventario salvato in background.
     
     Legge tutti i vini dalla tabella inventario e applica normalizzazioni:
-    1. Estrae regione da classification se region è vuoto
-    2. Normalizza valori region, country, wine_type
-    3. Infers country da region se country è vuoto
-    4. Aggiorna database con valori normalizzati
+    1. Filtra e rimuove vini con nomi invalidi (solo numeri, troppo corti, placeholder)
+    2. Estrae regione da classification se region è vuoto
+    3. Normalizza valori region, country, wine_type
+    4. Infers country da region se country è vuoto
+    5. Aggiorna database con valori normalizzati
     
     Args:
         session: Database session
@@ -205,6 +251,7 @@ async def normalize_saved_inventory(
         Dict con statistiche normalizzazione:
         {
             "total_wines": int,
+            "invalid_wines_removed": int,
             "normalized_count": int,
             "region_extracted": int,
             "country_inferred": int,
@@ -213,6 +260,7 @@ async def normalize_saved_inventory(
     """
     stats = {
         "total_wines": 0,
+        "invalid_wines_removed": 0,
         "normalized_count": 0,
         "region_extracted": 0,
         "country_inferred": 0,
@@ -235,9 +283,9 @@ async def normalize_saved_inventory(
         
         user_id = user_row[0]
         
-        # Leggi tutti i vini dalla tabella
+        # Leggi tutti i vini dalla tabella (include anche winery, qty, price per validazione nome)
         query = sql_text(f"""
-            SELECT id, name, region, country, classification, wine_type
+            SELECT id, name, winery, qty, price, region, country, classification, wine_type
             FROM {table_name}
             WHERE user_id = :user_id
         """)
@@ -253,9 +301,51 @@ async def normalize_saved_inventory(
         if not wines:
             return stats
         
-        # Processa ogni vino
-        updates = []
+        # 1. Filtra e rimuove vini con nomi invalidi
+        invalid_wine_ids = []
+        valid_wines = []
+        
         for wine in wines:
+            wine_id = wine.id
+            wine_name = wine.name
+            wine_winery = wine.winery
+            wine_qty = wine.qty if hasattr(wine, 'qty') else 0
+            wine_price = wine.price if hasattr(wine, 'price') else None
+            
+            if is_invalid_wine_name(wine_name, wine_winery, wine_qty, wine_price):
+                invalid_wine_ids.append(wine_id)
+                logger.debug(
+                    f"[POST_PROCESSING] Vino {wine_id} marcato per rimozione: "
+                    f"nome invalido '{wine_name}'"
+                )
+            else:
+                valid_wines.append(wine)
+        
+        # Rimuovi vini invalidi dal database
+        if invalid_wine_ids:
+            # Usa IN con lista per compatibilità asyncpg
+            # Costruisci query con placeholder per ogni ID
+            placeholders = ','.join([f':id_{i}' for i in range(len(invalid_wine_ids))])
+            delete_query = sql_text(f"""
+                DELETE FROM {table_name}
+                WHERE id IN ({placeholders}) AND user_id = :user_id
+            """)
+            params = {f'id_{i}': wine_id for i, wine_id in enumerate(invalid_wine_ids)}
+            params['user_id'] = user_id
+            await session.execute(delete_query, params)
+            await session.commit()
+            stats["invalid_wines_removed"] = len(invalid_wine_ids)
+            
+            # Log nomi vini rimossi (primi 10)
+            removed_names = [w.name for w in wines if w.id in invalid_wine_ids][:10]
+            logger.info(
+                f"[POST_PROCESSING] Job {job_id}: Rimossi {len(invalid_wine_ids)} vini con nomi invalidi "
+                f"(esempi: {removed_names}{'...' if len(invalid_wine_ids) > 10 else ''})"
+            )
+        
+        # Processa ogni vino valido per normalizzazione
+        updates = []
+        for wine in valid_wines:
             wine_id = wine.id
             current_region = wine.region
             current_country = wine.country
@@ -347,6 +437,7 @@ async def normalize_saved_inventory(
             
             logger.info(
                 f"[POST_PROCESSING] Job {job_id}: Normalizzazione completata - "
+                f"{stats['invalid_wines_removed']} vini invalidi rimossi, "
                 f"{stats['normalized_count']} vini aggiornati "
                 f"({stats['region_extracted']} regioni estratte, "
                 f"{stats['country_inferred']} country inferiti, "
