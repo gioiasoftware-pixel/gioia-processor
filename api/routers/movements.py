@@ -69,16 +69,54 @@ async def process_movement_background(
             table_inventario = user_tables["inventario"]
             table_consumi = user_tables["consumi"]
 
-            # Recupera vino per nome (case-insensitive match semplice)
-            find_wine = sql_text(f"""
+            # Recupera vino per nome con fuzzy matching (prima match esatto, poi parziale)
+            wine_name_lower = wine_name.lower().strip()
+            
+            # Prima prova: match esatto case-insensitive
+            find_wine_exact = sql_text(f"""
                 SELECT id, name, producer, quantity 
                 FROM {table_inventario}
-                WHERE user_id = :user_id AND LOWER(name) = LOWER(:wine_name)
+                WHERE user_id = :user_id AND LOWER(name) = :wine_name_lower
                 ORDER BY id
                 LIMIT 1
             """)
-            res = await db.execute(find_wine, {"user_id": user.id, "wine_name": wine_name})
+            res = await db.execute(find_wine_exact, {"user_id": user.id, "wine_name_lower": wine_name_lower})
             wine_row = res.fetchone()
+            
+            # Se non trovato, prova fuzzy matching (nome contiene il termine o viceversa)
+            if not wine_row:
+                # Pattern per LIKE: nome contiene il termine cercato
+                pattern = f"%{wine_name_lower}%"
+                pattern_start = f"{wine_name_lower}%"
+                
+                find_wine_fuzzy = sql_text(f"""
+                    SELECT id, name, producer, quantity 
+                    FROM {table_inventario}
+                    WHERE user_id = :user_id 
+                    AND LOWER(name) LIKE :pattern
+                    ORDER BY 
+                        CASE 
+                            WHEN LOWER(name) LIKE :pattern_start THEN 1
+                            WHEN LOWER(name) LIKE :pattern THEN 2
+                            ELSE 3
+                        END,
+                        LENGTH(name),
+                        id
+                    LIMIT 1
+                """)
+                res = await db.execute(find_wine_fuzzy, {
+                    "user_id": user.id, 
+                    "pattern": pattern,
+                    "pattern_start": pattern_start
+                })
+                wine_row = res.fetchone()
+                
+                # Log se trovato con fuzzy matching
+                if wine_row:
+                    wine_name_found = wine_row[1] if len(wine_row) > 1 else 'N/A'
+                    logger.info(
+                        f"[MOVEMENT] Job {job_id}: Fuzzy match trovato: '{wine_name}' → '{wine_name_found}'"
+                    )
 
             if not wine_row:
                 err = f"Vino '{wine_name}' non trovato"
