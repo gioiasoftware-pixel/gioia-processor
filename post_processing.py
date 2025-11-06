@@ -704,12 +704,6 @@ async def normalize_saved_inventory(
                     f"applicazione batch a tutti i vini..."
                 )
                 
-                # Assicurati che la sessione sia in uno stato valido
-                try:
-                    await session.rollback()  # Reset transazione prima di iniziare
-                except:
-                    pass
-                
                 for pattern in common_patterns:
                     field = pattern.get("field")
                     old_value_pattern = pattern.get("old_value_pattern")
@@ -794,16 +788,17 @@ async def normalize_saved_inventory(
                             continue
                     
                     # Commit dopo ogni pattern per evitare transazioni troppo lunghe
-                    try:
-                        await session.commit()
-                    except Exception as commit_error:
-                        logger.warning(
-                            f"[POST_PROCESSING] Job {job_id}: Errore commit pattern '{old_value_pattern}': {commit_error}"
-                        )
+                    if corrections_applied > 0:
                         try:
-                            await session.rollback()
-                        except:
-                            pass
+                            await session.commit()
+                        except Exception as commit_error:
+                            logger.warning(
+                                f"[POST_PROCESSING] Job {job_id}: Errore commit pattern '{old_value_pattern}': {commit_error}"
+                            )
+                            try:
+                                await session.rollback()
+                            except:
+                                pass
                     
                     logger.info(
                         f"[POST_PROCESSING] Job {job_id}: Pattern '{old_value_pattern}' - "
@@ -811,11 +806,6 @@ async def normalize_saved_inventory(
                     )
             
             # ✅ PRIORITÀ 2: Applica correzioni specifiche per vini nel campione
-            # Assicurati che la sessione sia in uno stato valido
-            try:
-                await session.rollback()  # Reset transazione prima di correzioni specifiche
-            except:
-                pass
             for correction in corrections:
                 try:
                     wine_index = correction.get("wine_index")
