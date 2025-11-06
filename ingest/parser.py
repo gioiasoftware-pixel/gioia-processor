@@ -12,6 +12,7 @@ from core.logger import log_json
 from ingest.gate import route_file
 from ingest.csv_parser import parse_csv
 from ingest.excel_parser import parse_excel
+from ingest.header_detector import parse_csv_with_multiple_headers
 from ingest.normalization import (
     normalize_column_name,
     map_headers,
@@ -100,8 +101,9 @@ def parse_classic(
             raise ValueError(f"File routed to {stage}, expected csv_excel for Stage 1")
         
         # Stage 1: Parse
+        # Per CSV: usa parser con rilevamento header multipli
         if ext_normalized in ['csv', 'tsv']:
-            df, parse_info = parse_csv(file_content)
+            df, parse_info = parse_csv_with_multiple_headers(file_content)
         elif ext_normalized in ['xlsx', 'xls']:
             df, parse_info = parse_excel(file_content)
         else:
