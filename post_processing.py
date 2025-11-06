@@ -7,9 +7,11 @@ Dopo che l'inventario è stato salvato, esegue un secondo passaggio per:
 - Normalizzare valori (country, region, wine_type)
 - Estrarre country da region se country è vuoto
 - Pulire classification rimuovendo regione se già estratta
+- Validazione finale con LLM economico (max 2-3 retry se trova errori)
 """
 import logging
 import re
+import json
 from typing import Dict, Any, Optional, List, Tuple
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,28 @@ from core.database import get_user_table_name
 from ingest.normalization import extract_wine_name_from_category_pattern
 
 logger = logging.getLogger(__name__)
+
+# Client OpenAI per validazione (singleton)
+_openai_client = None
+
+
+def get_openai_client():
+    """Ottiene client OpenAI (singleton) per validazione post-processing."""
+    global _openai_client
+    if _openai_client is None:
+        try:
+            from core.config import get_config
+            import openai
+            config = get_config()
+            api_key = config.openai_api_key
+            if not api_key:
+                logger.warning("[POST_PROCESSING] OPENAI_API_KEY non configurato, validazione LLM disabilitata")
+                return None
+            _openai_client = openai.OpenAI(api_key=api_key)
+        except Exception as e:
+            logger.warning(f"[POST_PROCESSING] Errore inizializzazione OpenAI client: {e}")
+            return None
+    return _openai_client
 
 # Lista regioni italiane comuni per validazione
 ITALIAN_REGIONS = [
@@ -227,27 +251,144 @@ def is_invalid_wine_name(name: Optional[str], winery: Optional[str], qty: int, p
     return False
 
 
+async def validate_wines_with_llm(
+    wines_sample: List[Dict[str, Any]],
+    max_wines: int = 20
+) -> Tuple[bool, List[Dict[str, Any]]]:
+    """
+    Valida campione di vini con LLM economico (gpt-4o-mini o gpt-3.5-turbo).
+    
+    Controlla:
+    - Nomi vini corretti (non categorie come "Bolle", "Rosè")
+    - Tipi vino corretti
+    - Dati coerenti (es. vintage ragionevole, prezzo positivo)
+    
+    Args:
+        wines_sample: Lista di vini da validare (max max_wines)
+        max_wines: Numero massimo di vini da validare (default 20)
+    
+    Returns:
+        Tuple (has_errors, corrections) dove:
+        - has_errors: True se ci sono errori trovati
+        - corrections: Lista di correzioni suggerite (wine_id, field, old_value, new_value)
+    """
+    client = get_openai_client()
+    if not client:
+        # Se OpenAI non disponibile, salta validazione
+        return False, []
+    
+    if not wines_sample or len(wines_sample) == 0:
+        return False, []
+    
+    # Limita campione per contenere costi
+    sample = wines_sample[:max_wines]
+    
+    try:
+        # Prepara prompt per validazione
+        wines_json = json.dumps(sample, ensure_ascii=False, indent=2)
+        
+        prompt = f"""Analizza questo campione di vini da un inventario e identifica errori comuni.
+
+CAMPIONE VINI:
+{wines_json}
+
+ERRORI DA CERCARE:
+1. Nomi vini che sono categorie/tipi invece di nomi reali (es. "Bolle", "Rosè", "Brut" senza nome vino tra parentesi)
+2. Pattern "Categoria (Nome Vino)" non estratti (es. "Bolle (Dom Perignon)" dovrebbe essere "Dom Perignon")
+3. Tipi vino mancanti o errati (inferisci da nome se possibile)
+4. Dati incoerenti (vintage fuori range 1900-2099, prezzi negativi, etc.)
+
+Rispondi SOLO con JSON array di correzioni:
+[
+  {{
+    "wine_index": 0,
+    "field": "name",
+    "old_value": "Bolle",
+    "new_value": "Dom Perignon",
+    "reason": "Nome è categoria, estrai da pattern se presente"
+  }},
+  {{
+    "wine_index": 1,
+    "field": "wine_type",
+    "old_value": null,
+    "new_value": "Spumante",
+    "reason": "Inferito da nome/categoria"
+  }}
+]
+
+Se non ci sono errori, rispondi con array vuoto: []
+"""
+        
+        # Usa modello economico (gpt-4o-mini o gpt-3.5-turbo)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # Modello economico
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Sei un validatore di dati inventario vini. Identifica errori comuni e suggerisci correzioni. Rispondi SOLO con JSON array."
+                },
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=1000  # Limite basso per contenere costi
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Estrai JSON dalla risposta
+        try:
+            # Rimuovi markdown code blocks se presenti
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            corrections = json.loads(response_text)
+            if not isinstance(corrections, list):
+                corrections = []
+            
+            has_errors = len(corrections) > 0
+            
+            logger.info(
+                f"[POST_PROCESSING] Validazione LLM: {len(corrections)} correzioni suggerite "
+                f"su {len(sample)} vini validati"
+            )
+            
+            return has_errors, corrections
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"[POST_PROCESSING] Errore parsing JSON validazione LLM: {e}, risposta: {response_text[:200]}")
+            return False, []
+            
+    except Exception as e:
+        logger.warning(f"[POST_PROCESSING] Errore validazione LLM: {e}")
+        return False, []
+
+
 async def normalize_saved_inventory(
     session: AsyncSession,
     telegram_id: int,
     business_name: str,
-    job_id: Optional[str] = None
+    job_id: Optional[str] = None,
+    max_retries: int = 3
 ) -> Dict[str, Any]:
     """
-    Normalizza inventario salvato in background.
+    Normalizza inventario salvato in background con validazione LLM finale.
     
     Legge tutti i vini dalla tabella inventario e applica normalizzazioni:
     1. Filtra e rimuove vini con nomi invalidi (solo numeri, troppo corti, placeholder)
-    2. Estrae regione da classification se region è vuoto
-    3. Normalizza valori region, country, wine_type
-    4. Infers country da region se country è vuoto
-    5. Aggiorna database con valori normalizzati
+    2. Estrae nome vino da pattern "Categoria (Nome Vino)"
+    3. Estrae regione da classification se region è vuoto
+    4. Normalizza valori region, country, wine_type
+    5. Infers country da region se country è vuoto
+    6. Validazione finale con LLM economico (max max_retries retry se trova errori)
     
     Args:
         session: Database session
         telegram_id: ID Telegram utente
         business_name: Nome business
         job_id: ID job (opzionale, per logging)
+        max_retries: Numero massimo di retry con validazione LLM (default 3)
     
     Returns:
         Dict con statistiche normalizzazione:
@@ -257,7 +398,9 @@ async def normalize_saved_inventory(
             "normalized_count": int,
             "region_extracted": int,
             "country_inferred": int,
-            "values_normalized": int
+            "values_normalized": int,
+            "llm_validation_retries": int,
+            "llm_corrections_applied": int
         }
     """
     stats = {
@@ -266,7 +409,9 @@ async def normalize_saved_inventory(
         "normalized_count": 0,
         "region_extracted": 0,
         "country_inferred": 0,
-        "values_normalized": 0
+        "values_normalized": 0,
+        "llm_validation_retries": 0,
+        "llm_corrections_applied": 0
     }
     
     try:
@@ -488,6 +633,103 @@ async def normalize_saved_inventory(
             logger.info(
                 f"[POST_PROCESSING] Job {job_id}: Nessuna normalizzazione necessaria "
                 f"per {len(wines)} vini"
+            )
+        
+        # ✅ VALIDAZIONE LLM FINALE con retry (max max_retries volte)
+        llm_retry_count = 0
+        while llm_retry_count < max_retries:
+            # Leggi vini aggiornati per validazione
+            result = await session.execute(query, {"user_id": user_id})
+            wines_after_normalization = result.fetchall()
+            
+            if not wines_after_normalization:
+                break
+            
+            # Prepara campione per validazione LLM (max 20 vini)
+            wines_sample = []
+            for wine in wines_after_normalization[:20]:
+                wines_sample.append({
+                    "id": wine.id,
+                    "name": wine.name,
+                    "winery": wine.winery,
+                    "vintage": wine.vintage if hasattr(wine, 'vintage') else None,
+                    "qty": wine.qty if hasattr(wine, 'qty') else 0,
+                    "price": wine.price if hasattr(wine, 'price') else None,
+                    "wine_type": wine.wine_type,
+                    "region": wine.region,
+                    "country": wine.country,
+                    "classification": wine.classification
+                })
+            
+            # Valida con LLM
+            has_errors, corrections = await validate_wines_with_llm(wines_sample, max_wines=20)
+            
+            if not has_errors or len(corrections) == 0:
+                # Nessun errore trovato, esci dal loop
+                logger.info(
+                    f"[POST_PROCESSING] Job {job_id}: Validazione LLM completata - "
+                    f"nessun errore trovato (retry {llm_retry_count + 1}/{max_retries})"
+                )
+                break
+            
+            # Applica correzioni suggerite
+            corrections_applied = 0
+            for correction in corrections:
+                try:
+                    wine_index = correction.get("wine_index")
+                    field = correction.get("field")
+                    new_value = correction.get("new_value")
+                    
+                    if wine_index is None or field is None or new_value is None:
+                        continue
+                    
+                    # Trova il vino corrispondente
+                    if wine_index < len(wines_sample):
+                        wine_id_to_update = wines_sample[wine_index]["id"]
+                        
+                        # Costruisci UPDATE dinamico
+                        update_query = sql_text(f"""
+                            UPDATE {table_name}
+                            SET {field} = :new_value, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :wine_id AND user_id = :user_id
+                        """)
+                        await session.execute(update_query, {
+                            "new_value": new_value,
+                            "wine_id": wine_id_to_update,
+                            "user_id": user_id
+                        })
+                        corrections_applied += 1
+                        logger.debug(
+                            f"[POST_PROCESSING] Job {job_id}: Applicata correzione LLM - "
+                            f"vino {wine_id_to_update}, campo {field} = '{new_value}'"
+                        )
+                except Exception as corr_error:
+                    logger.warning(
+                        f"[POST_PROCESSING] Job {job_id}: Errore applicazione correzione LLM: {corr_error}"
+                    )
+                    continue
+            
+            if corrections_applied > 0:
+                await session.commit()
+                stats["llm_corrections_applied"] += corrections_applied
+                llm_retry_count += 1
+                stats["llm_validation_retries"] = llm_retry_count
+                
+                logger.info(
+                    f"[POST_PROCESSING] Job {job_id}: Applicate {corrections_applied} correzioni LLM "
+                    f"(retry {llm_retry_count}/{max_retries})"
+                )
+                
+                # Se ci sono ancora correzioni, continua il loop per rifare post-processing
+                # (le normalizzazioni precedenti verranno riapplicate)
+            else:
+                # Nessuna correzione applicabile, esci
+                break
+        
+        if llm_retry_count > 0:
+            logger.info(
+                f"[POST_PROCESSING] Job {job_id}: Validazione LLM completata - "
+                f"{stats['llm_corrections_applied']} correzioni applicate in {llm_retry_count} retry"
             )
         
         return stats
