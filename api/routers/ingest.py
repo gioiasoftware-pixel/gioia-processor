@@ -323,6 +323,42 @@ async def process_inventory_background(
                 except Exception as notif_error:
                     logger.warning(f"Errore invio notifica admin: {notif_error}")
                 
+                # ✅ POST-PROCESSING: Normalizza inventario salvato in background
+                # Esegue dopo che il job è marcato come completed, non blocca il flusso
+                async def run_post_processing():
+                    """Task background per normalizzazione post-processing"""
+                    try:
+                        logger.info(
+                            f"[POST_PROCESSING] Job {job_id}: Avvio normalizzazione "
+                            f"in background per {telegram_id}/{business_name}"
+                        )
+                        
+                        # Usa una nuova sessione per il post-processing
+                        async for db_session in get_db():
+                            from post_processing import normalize_saved_inventory
+                            
+                            stats = await normalize_saved_inventory(
+                                session=db_session,
+                                telegram_id=telegram_id,
+                                business_name=business_name,
+                                job_id=job_id
+                            )
+                            
+                            logger.info(
+                                f"[POST_PROCESSING] Job {job_id}: Normalizzazione completata - "
+                                f"{stats['normalized_count']}/{stats['total_wines']} vini normalizzati"
+                            )
+                            break
+                    except Exception as post_error:
+                        # Non bloccare il flusso principale se post-processing fallisce
+                        logger.warning(
+                            f"[POST_PROCESSING] Job {job_id}: Errore post-processing "
+                            f"(non critico): {post_error}"
+                        )
+                
+                # Avvia post-processing in background (non blocca)
+                asyncio.create_task(run_post_processing())
+                
                 break
                 
             except Exception as processing_error:
