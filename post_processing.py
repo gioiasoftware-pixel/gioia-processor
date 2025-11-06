@@ -268,17 +268,18 @@ async def validate_wines_with_llm(
         max_wines: Numero massimo di vini da validare (default 20)
     
     Returns:
-        Tuple (has_errors, corrections) dove:
+        Tuple (has_errors, corrections, common_patterns) dove:
         - has_errors: True se ci sono errori trovati
-        - corrections: Lista di correzioni suggerite (wine_id, field, old_value, new_value)
+        - corrections: Lista di correzioni specifiche per vini nel campione
+        - common_patterns: Lista di pattern comuni da applicare a tutti i vini
     """
     client = get_openai_client()
     if not client:
         # Se OpenAI non disponibile, salta validazione
-        return False, []
+        return False, [], []
     
     if not wines_sample or len(wines_sample) == 0:
-        return False, []
+        return False, [], []
     
     # Limita campione per contenere costi
     sample = wines_sample[:max_wines]
@@ -287,7 +288,7 @@ async def validate_wines_with_llm(
         # Prepara prompt per validazione
         wines_json = json.dumps(sample, ensure_ascii=False, indent=2)
         
-        prompt = f"""Analizza questo campione di vini da un inventario e identifica errori comuni.
+        prompt = f"""Analizza questo campione di vini da un inventario e identifica errori comuni e PATTERN RICORRENTI.
 
 CAMPIONE VINI:
 {wines_json}
@@ -298,25 +299,32 @@ ERRORI DA CERCARE:
 3. Tipi vino mancanti o errati (inferisci da nome se possibile)
 4. Dati incoerenti (vintage fuori range 1900-2099, prezzi negativi, etc.)
 
-Rispondi SOLO con JSON array di correzioni:
-[
-  {{
-    "wine_index": 0,
-    "field": "name",
-    "old_value": "Bolle",
-    "new_value": "Dom Perignon",
-    "reason": "Nome è categoria, estrai da pattern se presente"
-  }},
-  {{
-    "wine_index": 1,
-    "field": "wine_type",
-    "old_value": null,
-    "new_value": "Spumante",
-    "reason": "Inferito da nome/categoria"
-  }}
-]
+IMPORTANTE - IDENTIFICA PATTERN COMUNI:
+Se vedi lo stesso errore ripetuto in molti vini (es. molti vini con "Bolle" come nome), identifica il PATTERN e suggerisci una correzione batch.
 
-Se non ci sono errori, rispondi con array vuoto: []
+Rispondi con JSON object con due campi:
+{{
+  "corrections": [
+    {{
+      "wine_index": 0,
+      "field": "name",
+      "old_value": "Bolle",
+      "new_value": "Dom Perignon",
+      "reason": "Nome è categoria, estrai da pattern se presente"
+    }}
+  ],
+  "common_patterns": [
+    {{
+      "field": "name",
+      "old_value_pattern": "Bolle",
+      "correction_rule": "extract_from_parentheses",
+      "inferred_type": "Spumante",
+      "description": "Molti vini hanno 'Bolle' come nome invece di tipo. Se il nome contiene parentesi, estrai il contenuto. Altrimenti usa il producer come nome."
+    }}
+  ]
+}}
+
+Se non ci sono errori, rispondi con: {{"corrections": [], "common_patterns": []}}
 """
         
         # Usa modello economico (gpt-4o-mini o gpt-3.5-turbo)
@@ -325,12 +333,12 @@ Se non ci sono errori, rispondi con array vuoto: []
             messages=[
                 {
                     "role": "system",
-                    "content": "Sei un validatore di dati inventario vini. Identifica errori comuni e suggerisci correzioni. Rispondi SOLO con JSON array."
+                    "content": "Sei un validatore di dati inventario vini. Identifica errori comuni e PATTERN RICORRENTI. Rispondi SOLO con JSON object con 'corrections' e 'common_patterns'."
                 },
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=1000  # Limite basso per contenere costi
+            max_tokens=1500  # Aumentato per gestire pattern comuni
         )
         
         response_text = response.choices[0].message.content.strip()
@@ -343,26 +351,41 @@ Se non ci sono errori, rispondi con array vuoto: []
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0].strip()
             
-            corrections = json.loads(response_text)
+            result = json.loads(response_text)
+            
+            # Gestisci sia formato vecchio (array) che nuovo (object con corrections e common_patterns)
+            if isinstance(result, list):
+                # Formato vecchio (backward compatibility)
+                corrections = result
+                common_patterns = []
+            elif isinstance(result, dict):
+                corrections = result.get("corrections", [])
+                common_patterns = result.get("common_patterns", [])
+            else:
+                corrections = []
+                common_patterns = []
+            
             if not isinstance(corrections, list):
                 corrections = []
+            if not isinstance(common_patterns, list):
+                common_patterns = []
             
-            has_errors = len(corrections) > 0
+            has_errors = len(corrections) > 0 or len(common_patterns) > 0
             
             logger.info(
-                f"[POST_PROCESSING] Validazione LLM: {len(corrections)} correzioni suggerite "
-                f"su {len(sample)} vini validati"
+                f"[POST_PROCESSING] Validazione LLM: {len(corrections)} correzioni specifiche, "
+                f"{len(common_patterns)} pattern comuni identificati su {len(sample)} vini validati"
             )
             
-            return has_errors, corrections
+            return has_errors, corrections, common_patterns
             
         except json.JSONDecodeError as e:
             logger.warning(f"[POST_PROCESSING] Errore parsing JSON validazione LLM: {e}, risposta: {response_text[:200]}")
-            return False, []
+            return False, [], []
             
     except Exception as e:
         logger.warning(f"[POST_PROCESSING] Errore validazione LLM: {e}")
-        return False, []
+        return False, [], []
 
 
 async def normalize_saved_inventory(
@@ -662,9 +685,9 @@ async def normalize_saved_inventory(
                 })
             
             # Valida con LLM
-            has_errors, corrections = await validate_wines_with_llm(wines_sample, max_wines=20)
+            has_errors, corrections, common_patterns = await validate_wines_with_llm(wines_sample, max_wines=20)
             
-            if not has_errors or len(corrections) == 0:
+            if not has_errors or (len(corrections) == 0 and len(common_patterns) == 0):
                 # Nessun errore trovato, esci dal loop
                 logger.info(
                     f"[POST_PROCESSING] Job {job_id}: Validazione LLM completata - "
@@ -672,8 +695,99 @@ async def normalize_saved_inventory(
                 )
                 break
             
-            # Applica correzioni suggerite
             corrections_applied = 0
+            
+            # ✅ PRIORITÀ 1: Applica pattern comuni a TUTTI i vini (batch update)
+            if common_patterns:
+                logger.info(
+                    f"[POST_PROCESSING] Job {job_id}: Identificati {len(common_patterns)} pattern comuni, "
+                    f"applicazione batch a tutti i vini..."
+                )
+                
+                for pattern in common_patterns:
+                    field = pattern.get("field")
+                    old_value_pattern = pattern.get("old_value_pattern")
+                    correction_rule = pattern.get("correction_rule")
+                    inferred_type = pattern.get("inferred_type")
+                    
+                    if not field or not old_value_pattern:
+                        continue
+                    
+                    # Trova tutti i vini con questo pattern
+                    pattern_matches = []
+                    for wine in wines_after_normalization:
+                        wine_value = getattr(wine, field, None) if hasattr(wine, field) else None
+                        if wine_value and old_value_pattern.lower() in str(wine_value).lower():
+                            pattern_matches.append(wine)
+                    
+                    if not pattern_matches:
+                        continue
+                    
+                    logger.info(
+                        f"[POST_PROCESSING] Job {job_id}: Pattern '{old_value_pattern}' trovato in "
+                        f"{len(pattern_matches)} vini, applicazione correzione batch..."
+                    )
+                    
+                    # Applica correzione batch in base alla regola
+                    for wine in pattern_matches:
+                        try:
+                            new_value = None
+                            
+                            if correction_rule == "extract_from_parentheses":
+                                # Estrai nome da pattern "Categoria (Nome Vino)"
+                                wine_name = getattr(wine, "name", None) if field == "name" else None
+                                if wine_name:
+                                    extracted_name, inferred_type_from_pattern = extract_wine_name_from_category_pattern(wine_name)
+                                    if extracted_name != wine_name:
+                                        new_value = extracted_name
+                                        # Se tipo è stato inferito e field è name, aggiorna anche wine_type
+                                        if inferred_type_from_pattern and field == "name":
+                                            # Aggiorna anche wine_type se mancante
+                                            if not getattr(wine, "wine_type", None):
+                                                type_update_query = sql_text(f"""
+                                                    UPDATE {table_name}
+                                                    SET wine_type = :wine_type, updated_at = CURRENT_TIMESTAMP
+                                                    WHERE id = :wine_id AND user_id = :user_id
+                                                """)
+                                                await session.execute(type_update_query, {
+                                                    "wine_type": inferred_type_from_pattern,
+                                                    "wine_id": wine.id,
+                                                    "user_id": user_id
+                                                })
+                            elif correction_rule == "use_producer_as_name" and field == "name":
+                                # Usa producer come nome se disponibile
+                                producer = getattr(wine, "producer", None)
+                                if producer:
+                                    new_value = producer
+                            elif inferred_type and field == "wine_type":
+                                # Imposta tipo inferito
+                                new_value = inferred_type
+                            
+                            if new_value:
+                                update_query = sql_text(f"""
+                                    UPDATE {table_name}
+                                    SET {field} = :new_value, updated_at = CURRENT_TIMESTAMP
+                                    WHERE id = :wine_id AND user_id = :user_id
+                                """)
+                                await session.execute(update_query, {
+                                    "new_value": new_value,
+                                    "wine_id": wine.id,
+                                    "user_id": user_id
+                                })
+                                corrections_applied += 1
+                                
+                        except Exception as pattern_error:
+                            logger.warning(
+                                f"[POST_PROCESSING] Job {job_id}: Errore applicazione pattern batch: {pattern_error}"
+                            )
+                            continue
+                    
+                    logger.info(
+                        f"[POST_PROCESSING] Job {job_id}: Pattern '{old_value_pattern}' - "
+                        f"applicate {len(pattern_matches)} correzioni batch"
+                    )
+            
+            # ✅ PRIORITÀ 2: Applica correzioni specifiche per vini nel campione
             for correction in corrections:
                 try:
                     wine_index = correction.get("wine_index")
