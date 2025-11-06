@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from core.config import get_config
 from core.logger import log_json, set_request_context, get_request_context
 from ingest.gate import route_file
+from ingest.header_identifier import identify_headers_and_extract
 from ingest.parser import parse_classic
 from ingest.llm_targeted import apply_targeted_ai
 from ingest.llm_extract import extract_llm_mode, deduplicate_wines
@@ -109,9 +110,9 @@ async def process_file(
             aggregated_metrics['error'] = f"Routing failed: {str(e)}"
             return [], aggregated_metrics, 'error', 'gate_error'
         
-        # Routing: CSV/Excel → Stage 1, PDF/immagini → Stage 4
+        # Routing: CSV/Excel → Stage 0.5 → Stage 1, PDF/immagini → Stage 4
         if stage_route == 'csv_excel':
-            # Percorso: Stage 1 → Stage 2 → Stage 3
+            # Percorso: Stage 0.5 → Stage 1 → Stage 2 → Stage 3
             wines_data, metrics, decision, stage_used = await _process_csv_excel_path(
                 file_content, file_name, ext, telegram_id, correlation_id, config
             )
@@ -197,7 +198,7 @@ async def _process_csv_excel_path(
     config
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str, str]:
     """
-    Processa percorso CSV/Excel: Stage 1 → Stage 2 → Stage 3.
+    Processa percorso CSV/Excel: Stage 0.5 → Stage 1 → Stage 2 → Stage 3.
     
     Returns:
         Tuple (wines_data, metrics, decision, stage_used)
@@ -206,6 +207,66 @@ async def _process_csv_excel_path(
     metrics: Dict[str, Any] = {}
     decision = 'error'
     stage_used = 'unknown'
+    
+    # Stage 0.5: Identificazione header senza AI (solo per CSV/TSV)
+    if ext in ['csv', 'tsv']:
+        try:
+            logger.info(f"[PIPELINE] Stage 0.5: Starting header identification for {file_name}")
+            wines_data_stage_0_5, metrics_stage_0_5 = identify_headers_and_extract(
+                file_content=file_content,
+                file_name=file_name,
+                ext=ext
+            )
+            
+            headers_found = metrics_stage_0_5.get('headers_found', 0)
+            wines_extracted = metrics_stage_0_5.get('wines_extracted', 0)
+            
+            logger.info(
+                f"[PIPELINE] Stage 0.5: {headers_found} header trovati, "
+                f"{wines_extracted} vini estratti"
+            )
+            
+            # Se Stage 0.5 ha trovato header e estratto vini, usa quelli
+            if headers_found > 0 and wines_extracted > 0:
+                # Valida i vini estratti
+                from ingest.validation import validate_batch, wine_model_to_dict
+                valid_wines, rejected_wines, validation_stats = validate_batch(wines_data_stage_0_5)
+                wines_data = [wine_model_to_dict(wine) for wine in valid_wines]
+                
+                # Se abbiamo almeno 50% di vini validi, salva
+                valid_ratio = len(wines_data) / wines_extracted if wines_extracted > 0 else 0
+                
+                if valid_ratio >= 0.5 and len(wines_data) >= 10:
+                    decision = 'save'
+                    stage_used = 'header_identifier_stage_0_5'
+                    metrics = metrics_stage_0_5.copy()
+                    metrics['rows_valid'] = len(wines_data)
+                    metrics['rows_rejected'] = len(rejected_wines)
+                    metrics['valid_ratio'] = valid_ratio
+                    metrics.setdefault('stages_attempted', []).append('header_identifier_stage_0_5')
+                    
+                    logger.info(
+                        f"[PIPELINE] Stage 0.5 SUCCESS: {len(wines_data)} vini validi estratti "
+                        f"(valid_ratio={valid_ratio:.2f}) → SALVA"
+                    )
+                    return wines_data, metrics, decision, stage_used
+                else:
+                    logger.info(
+                        f"[PIPELINE] Stage 0.5 insufficiente: {len(wines_data)} vini validi "
+                        f"(valid_ratio={valid_ratio:.2f}) → continua a Stage 1"
+                    )
+                    # Continua a Stage 1, ma mantieni i vini di Stage 0.5 per unirli dopo
+                    wines_data_stage_0_5_backup = wines_data.copy()
+            else:
+                logger.info(
+                    f"[PIPELINE] Stage 0.5: nessun header trovato o vini estratti → continua a Stage 1"
+                )
+                wines_data_stage_0_5_backup = []
+        except Exception as e:
+            logger.warning(f"[PIPELINE] Stage 0.5 failed: {e}, continuing to Stage 1")
+            wines_data_stage_0_5_backup = []
+    else:
+        wines_data_stage_0_5_backup = []
     
     # Stage 1: Parse classico
     try:
@@ -223,6 +284,21 @@ async def _process_csv_excel_path(
         metrics['stages_attempted'].append('csv_excel_parse')
         
         if decision == 'save':
+            # Se abbiamo vini da Stage 0.5, uniscili
+            if wines_data_stage_0_5_backup:
+                logger.info(
+                    f"[PIPELINE] Unendo Stage 0.5 ({len(wines_data_stage_0_5_backup)} vini) + "
+                    f"Stage 1 ({len(wines_data)} vini)"
+                )
+                combined_wines = wines_data_stage_0_5_backup + wines_data
+                wines_data = deduplicate_wines(combined_wines, merge_quantities=True)
+                logger.info(
+                    f"[PIPELINE] Dopo unione e deduplicazione: {len(wines_data)} vini totali"
+                )
+                metrics['stage_0_5_wines_count'] = len(wines_data_stage_0_5_backup)
+                metrics['stage_1_wines_count'] = len(wines_data) - len(wines_data_stage_0_5_backup)
+                metrics['final_wines_count'] = len(wines_data)
+            
             logger.info(f"[PIPELINE] Stage 1 SUCCESS: {len(wines_data)} wines extracted")
             return wines_data, metrics, decision, stage_used
         elif decision == 'escalate_to_stage2':
