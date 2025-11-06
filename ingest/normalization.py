@@ -411,6 +411,81 @@ def normalize_alcohol_content(value: Any) -> Optional[float]:
     return None
 
 
+def extract_wine_name_from_category_pattern(name_str: str) -> tuple[str, Optional[str]]:
+    """
+    Estrae nome vino da pattern "Categoria (Nome Vino)" o "Categoria (Nome Vino) Anno".
+    
+    Esempi:
+    - "Bolle (Dom Perignon) 2015" → ("Dom Perignon", "Spumante")
+    - "Nomine' brut (Nomine' Renard)" → ("Nomine' Renard", "Spumante")
+    - "Rosè (Chateau de Pibernon) 2022" → ("Chateau de Pibernon", "Rosato")
+    - "Passiti (chateau Gravas)" → ("chateau Gravas", "Altro")
+    - "Tradition (Cottet Debreuil)" → ("Tradition (Cottet Debreuil)", None)  # Non cambia se non matcha pattern
+    
+    Args:
+        name_str: Nome vino originale
+    
+    Returns:
+        Tuple (nome_vino_estratto, tipo_inferito) dove tipo_inferito può essere None
+    """
+    if not name_str or not name_str.strip():
+        return name_str, None
+    
+    name_clean = name_str.strip()
+    
+    # Pattern: "Categoria (Nome Vino)" o "Categoria (Nome Vino) Anno"
+    # Cerca parentesi tonde con contenuto
+    pattern = r'^(.+?)\s*\(([^)]+)\)(?:\s+(\d{4}))?$'
+    match = re.match(pattern, name_clean)
+    
+    if match:
+        category = match.group(1).strip()
+        wine_name = match.group(2).strip()
+        year = match.group(3) if match.lastindex >= 3 and match.group(3) else None
+        
+        # Mappa categorie comuni a tipi vino
+        category_lower = category.lower()
+        type_mapping = {
+            'bolle': 'Spumante',
+            'bolle\'': 'Spumante',
+            'spumante': 'Spumante',
+            'champagne': 'Spumante',
+            'rosè': 'Rosato',
+            'rosé': 'Rosato',
+            'rose': 'Rosato',
+            'rosato': 'Rosato',
+            'brut': 'Spumante',
+            'brut nature': 'Spumante',
+            'demi-sec': 'Spumante',
+            'sec': 'Spumante',
+            'passiti': 'Altro',
+            'passito': 'Altro',
+            'dolce': 'Altro',
+            'bianco': 'Bianco',
+            'rosso': 'Rosso',
+            'blanc': 'Bianco',
+            'rouge': 'Rosso',
+        }
+        
+        # Cerca match parziale nelle categorie (es. "Nomine' brut" → "brut" → "Spumante")
+        inferred_type = None
+        for cat_key, wine_type in type_mapping.items():
+            if cat_key in category_lower:
+                inferred_type = wine_type
+                break
+        
+        # Se il nome estratto è valido (non vuoto), usalo
+        if wine_name and len(wine_name) > 0:
+            logger.debug(
+                f"[NORMALIZATION] Estratto nome da pattern categoria: "
+                f"'{name_clean}' → name='{wine_name}', type={inferred_type}"
+            )
+            return wine_name, inferred_type
+    
+    # Se non matcha pattern, ritorna originale
+    return name_clean, None
+
+
 def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalizza valori riga secondo schema WineItemModel esteso.
@@ -425,7 +500,7 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     normalized = {}
     
-    # Name (trim e pulizia)
+    # Name (trim e pulizia + estrazione da pattern categoria)
     if 'name' in row:
         name_raw = row['name']
         # Controlla NaN prima
@@ -437,7 +512,13 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
             if name_str.lower() in ['nan', 'none', 'null', 'n/a', 'na', '', 'undefined']:
                 normalized['name'] = ""
             else:
-                normalized['name'] = name_str
+                # ✅ NUOVO: Estrai nome da pattern "Categoria (Nome Vino)"
+                extracted_name, inferred_type = extract_wine_name_from_category_pattern(name_str)
+                normalized['name'] = extracted_name
+                
+                # Se tipo è stato inferito e non c'è già un tipo, usalo
+                if inferred_type and not row.get('type'):
+                    normalized['type'] = inferred_type
     else:
         normalized['name'] = ""
     

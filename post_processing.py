@@ -2,6 +2,7 @@
 Post-Processing Normalization - Normalizza inventario salvato in background.
 
 Dopo che l'inventario è stato salvato, esegue un secondo passaggio per:
+- Estrarre nome vino da pattern "Categoria (Nome Vino)" (es. "Bolle (Dom Perignon)" → name="Dom Perignon", type="Spumante")
 - Estrarre regione da classification (es. "Marche / Verdicchio DOC" → region="Marche")
 - Normalizzare valori (country, region, wine_type)
 - Estrarre country da region se country è vuoto
@@ -13,6 +14,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_user_table_name
+from ingest.normalization import extract_wine_name_from_category_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -347,15 +349,34 @@ async def normalize_saved_inventory(
         updates = []
         for wine in valid_wines:
             wine_id = wine.id
+            current_name = wine.name
             current_region = wine.region
             current_country = wine.country
             current_classification = wine.classification
             current_wine_type = wine.wine_type
             
             needs_update = False
+            new_name = current_name
             new_region = current_region
             new_country = current_country
             new_classification = current_classification
+            new_wine_type = current_wine_type
+            
+            # 0. Estrai nome vino da pattern "Categoria (Nome Vino)" se presente
+            if current_name:
+                extracted_name, inferred_type = extract_wine_name_from_category_pattern(current_name)
+                if extracted_name != current_name:
+                    # Nome è stato estratto da pattern
+                    new_name = extracted_name
+                    needs_update = True
+                    # Se tipo è stato inferito e non c'è già un tipo, usalo
+                    if inferred_type and not current_wine_type:
+                        new_wine_type = inferred_type
+                    logger.debug(
+                        f"[POST_PROCESSING] Job {job_id}: Estratto nome da pattern categoria "
+                        f"per vino '{current_name}' → name='{new_name}', type={new_wine_type} "
+                        f"(telegram_id={telegram_id}, wine_id={wine_id})"
+                    )
             
             # 1. Estrai regione da classification se region è vuoto
             if not current_region and current_classification:
@@ -402,12 +423,18 @@ async def normalize_saved_inventory(
             
             # Se ci sono modifiche, aggiungi a updates
             if needs_update:
-                updates.append({
+                update_data = {
                     "id": wine_id,
                     "region": new_region,
                     "country": new_country,
                     "classification": new_classification
-                })
+                }
+                # Aggiungi name e wine_type solo se modificati
+                if new_name != current_name:
+                    update_data["name"] = new_name
+                if new_wine_type != current_wine_type:
+                    update_data["wine_type"] = new_wine_type
+                updates.append(update_data)
         
         # Esegui UPDATE batch se ci sono modifiche
         if updates:
@@ -417,20 +444,34 @@ async def normalize_saved_inventory(
             )
             
             for update_data in updates:
-                update_query = sql_text(f"""
-                    UPDATE {table_name}
-                    SET region = :region,
-                        country = :country,
-                        classification = :classification
-                    WHERE id = :id AND user_id = :user_id
-                """)
-                await session.execute(update_query, {
-                    "id": update_data["id"],
-                    "region": update_data["region"],
-                    "country": update_data["country"],
-                    "classification": update_data["classification"],
-                    "user_id": user_id
-                })
+                # Costruisci query UPDATE dinamica in base ai campi modificati
+                set_clauses = []
+                params = {"id": update_data["id"], "user_id": user_id}
+                
+                if "name" in update_data:
+                    set_clauses.append("name = :name")
+                    params["name"] = update_data["name"]
+                if "wine_type" in update_data:
+                    set_clauses.append("wine_type = :wine_type")
+                    params["wine_type"] = update_data["wine_type"]
+                if "region" in update_data:
+                    set_clauses.append("region = :region")
+                    params["region"] = update_data["region"]
+                if "country" in update_data:
+                    set_clauses.append("country = :country")
+                    params["country"] = update_data["country"]
+                if "classification" in update_data:
+                    set_clauses.append("classification = :classification")
+                    params["classification"] = update_data["classification"]
+                
+                if set_clauses:
+                    set_clauses.append("updated_at = CURRENT_TIMESTAMP")
+                    update_query = sql_text(f"""
+                        UPDATE {table_name}
+                        SET {', '.join(set_clauses)}
+                        WHERE id = :id AND user_id = :user_id
+                    """)
+                    await session.execute(update_query, params)
             
             await session.commit()
             stats["normalized_count"] = len(updates)

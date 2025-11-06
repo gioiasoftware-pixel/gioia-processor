@@ -248,6 +248,17 @@ Cosa estrarre (IMPORTANTE - LEGGI ATTENTAMENTE):
 - Estrai TUTTI i campi disponibili (uvaggio, regione, nazione, fornitore/rappresentato/rappresentati, denominazione, costo, gradazione, descrizione, note)
 - Il campo "supplier" (fornitore) può essere indicato anche come "rappresentato", "rappresentati", "rappresentante", "rappresentati da", etc.
 - Se un campo non è presente nella riga, usa null (NON omettere il campo)
+
+ESTRAZIONE NOME VINO DA PATTERN CATEGORIA (CRITICO):
+- Se vedi pattern come "Bolle (Dom Perignon)" o "Rosè (Chateau de Pibernon)":
+  → Il NOME VINO è quello tra parentesi: "Dom Perignon", "Chateau de Pibernon"
+  → La parte prima delle parentesi ("Bolle", "Rosè") è la CATEGORIA/TIPO, NON il nome
+  → Usa la categoria per inferire il campo "type": "Bolle" → "Spumante", "Rosè" → "Rosato", "brut" → "Spumante"
+- Esempi:
+  * "Bolle (Dom Perignon) 2015" → name="Dom Perignon", type="Spumante", vintage=2015
+  * "Nomine' brut (Nomine' Renard)" → name="Nomine' Renard", type="Spumante"
+  * "Rosè (Chateau de Pibernon) 2022" → name="Chateau de Pibernon", type="Rosato", vintage=2022
+  * "Passiti (chateau Gravas)" → name="chateau Gravas", type="Altro"
 - Se vedi righe header (es. "Indice,ID,Etichetta,Cantina..."), ignorale SOLO se sono chiaramente header
 - Se vedi righe completamente vuote (solo virgole o separatori), ignorale
 - Se una riga ha almeno: nome vino + (cantina O qty O prezzo O annata), estrai SEMPRE
