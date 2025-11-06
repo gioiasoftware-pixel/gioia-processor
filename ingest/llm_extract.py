@@ -245,7 +245,8 @@ Cosa estrarre (IMPORTANTE - LEGGI ATTENTAMENTE):
 - Estrai anche righe senza prezzo (usa null)
 - Estrai anche righe senza cantina (usa null)
 - Estrai anche righe senza annata (usa null)
-- Estrai TUTTI i campi disponibili (uvaggio, regione, nazione, fornitore, denominazione, costo, gradazione, descrizione, note)
+- Estrai TUTTI i campi disponibili (uvaggio, regione, nazione, fornitore/rappresentato/rappresentati, denominazione, costo, gradazione, descrizione, note)
+- Il campo "supplier" (fornitore) può essere indicato anche come "rappresentato", "rappresentati", "rappresentante", "rappresentati da", etc.
 - Se un campo non è presente nella riga, usa null (NON omettere il campo)
 - Se vedi righe header (es. "Indice,ID,Etichetta,Cantina..."), ignorale SOLO se sono chiaramente header
 - Se vedi righe completamente vuote (solo virgole o separatori), ignorale
