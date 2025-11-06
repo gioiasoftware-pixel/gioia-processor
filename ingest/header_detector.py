@@ -20,6 +20,97 @@ HEADER_KEYWORDS = [
     'gradazione', 'alcohol', 'descrizione', 'description', 'note', 'note'
 ]
 
+# Keywords per identificare header di sezioni produttori/cantine
+PRODUCER_SECTION_KEYWORDS = [
+    'produttore', 'producer', 'cantina', 'winery', 'casa', 'azienda', 'domaine', 'chateau',
+    'marca', 'brand', 'fornitore', 'supplier', 'rappresentato', 'rappresentati'
+]
+
+# Keywords per identificare righe che sono produttori (non vini)
+PRODUCER_ROW_KEYWORDS = [
+    'produttore', 'producer', 'cantina', 'winery', 'casa', 'azienda', 'domaine', 'chateau',
+    'marca', 'brand', 'fornitore', 'supplier', 'rappresentato', 'rappresentati', 'rappresentante'
+]
+
+
+def is_producer_section_header(row: List[str]) -> bool:
+    """
+    Verifica se una riga è un header di sezione produttori/cantine.
+    
+    Args:
+        row: Lista di valori della riga
+    
+    Returns:
+        True se la riga sembra essere un header di sezione produttori
+    """
+    if len(row) < 1:
+        return False
+    
+    # Controlla se contiene keyword di sezione produttori
+    for cell in row:
+        if not cell or str(cell).strip() == '':
+            continue
+        
+        cell_lower = str(cell).strip().lower()
+        for keyword in PRODUCER_SECTION_KEYWORDS:
+            if keyword in cell_lower:
+                # Verifica che non sia un header normale (non ha molte colonne)
+                if len([c for c in row if c and str(c).strip()]) <= 3:
+                    return True
+    
+    return False
+
+
+def is_producer_row(row: List[str], current_producer: Optional[str] = None) -> bool:
+    """
+    Verifica se una riga rappresenta un produttore (non un vino).
+    
+    Una riga è un produttore se:
+    - Contiene keyword di produttore E ha poche colonne con dati
+    - O è una riga con solo testo (probabilmente nome produttore)
+    - O ha un pattern tipico di intestazione produttore
+    
+    Args:
+        row: Lista di valori della riga
+        current_producer: Produttore corrente (per confronto)
+    
+    Returns:
+        True se la riga sembra essere un produttore
+    """
+    if len(row) < 1:
+        return False
+    
+    # Conta colonne con dati significativi
+    non_empty_cells = [c for c in row if c and str(c).strip() and str(c).strip().lower() not in ['nan', 'none', 'null', '']]
+    
+    # Se ha solo 1-2 colonne con dati, potrebbe essere un produttore
+    if len(non_empty_cells) <= 2:
+        # Verifica se contiene keyword di produttore
+        for cell in non_empty_cells:
+            cell_lower = str(cell).strip().lower()
+            for keyword in PRODUCER_ROW_KEYWORDS:
+                if keyword in cell_lower:
+                    return True
+        
+        # Se è una riga con solo testo (probabilmente nome produttore)
+        # e non contiene numeri o pattern di vino
+        first_cell = non_empty_cells[0] if non_empty_cells else ''
+        if first_cell:
+            # Non è un produttore se contiene pattern tipici di vino (anno, quantità, prezzo)
+            has_wine_pattern = (
+                bool(re.search(r'\b(19|20)\d{2}\b', first_cell)) or  # Anno
+                bool(re.search(r'\d+\s*(bott|pezzi|pz|qty)', first_cell, re.I)) or  # Quantità
+                bool(re.search(r'€|\d+[,.]\d+', first_cell))  # Prezzo
+            )
+            
+            if not has_wine_pattern and len(first_cell) > 3:
+                # Potrebbe essere un produttore se non è già il produttore corrente
+                if current_producer and first_cell.lower() == current_producer.lower():
+                    return False  # È lo stesso produttore, non una nuova riga produttore
+                return True
+    
+    return False
+
 
 def is_header_row(row: List[str], min_columns: int = 3) -> bool:
     """
@@ -181,6 +272,103 @@ def split_file_by_headers(
         return [(0, file_content)]
 
 
+def process_section_with_producers(
+    section_lines: List[str],
+    separator: str,
+    encoding: str
+) -> pd.DataFrame:
+    """
+    Processa una sezione CSV riconoscendo righe produttori e applicandole ai vini successivi.
+    
+    Args:
+        section_lines: Righe della sezione (prima riga è header)
+        separator: Separatore CSV
+        encoding: Encoding file
+    
+    Returns:
+        DataFrame con vini processati (winery applicato da righe produttore)
+    """
+    if len(section_lines) < 2:
+        return pd.DataFrame()
+    
+    # Prima riga è header
+    header_line = section_lines[0]
+    header_columns = [c.strip() for c in header_line.split(separator)]
+    
+    # Verifica se è una sezione produttori
+    is_producer_section = is_producer_section_header(header_columns)
+    
+    wines_data = []
+    current_producer = None
+    
+    # Processa righe dati
+    for line_idx, line in enumerate(section_lines[1:], start=1):
+        if not line.strip():
+            continue
+        
+        row = [c.strip() for c in line.split(separator)]
+        
+        # Verifica se è una riga produttore
+        if is_producer_row(row, current_producer):
+            # Estrai nome produttore (prima colonna non vuota)
+            producer_name = None
+            for cell in row:
+                if cell and cell.strip() and cell.strip().lower() not in ['nan', 'none', 'null', '']:
+                    producer_name = cell.strip()
+                    break
+            
+            if producer_name:
+                current_producer = producer_name
+                logger.debug(
+                    f"[HEADER_DETECTOR] Trovato produttore nella sezione: '{current_producer}' "
+                    f"(riga {line_idx})"
+                )
+            continue  # Salta riga produttore, non è un vino
+        
+        # È una riga vino: crea dict con dati
+        wine_dict = {}
+        for col_idx, col_name in enumerate(header_columns):
+            if col_idx < len(row):
+                wine_dict[col_name] = row[col_idx]
+            else:
+                wine_dict[col_name] = ''
+        
+        # Applica produttore corrente se disponibile e winery non presente
+        if current_producer:
+            # Se winery non è presente o è vuoto, usa produttore corrente
+            winery_col = None
+            for col in ['winery', 'cantina', 'producer', 'produttore']:
+                if col in wine_dict:
+                    winery_col = col
+                    break
+            
+            if not winery_col or not wine_dict.get(winery_col) or wine_dict[winery_col].strip() == '':
+                # Aggiungi colonna winery se non esiste
+                if 'winery' not in wine_dict:
+                    wine_dict['winery'] = current_producer
+                else:
+                    wine_dict[winery_col] = current_producer
+                
+                logger.debug(
+                    f"[HEADER_DETECTOR] Applicato produttore '{current_producer}' al vino riga {line_idx}"
+                )
+        
+        wines_data.append(wine_dict)
+    
+    if not wines_data:
+        return pd.DataFrame()
+    
+    # Crea DataFrame da lista di dict
+    df = pd.DataFrame(wines_data)
+    
+    logger.info(
+        f"[HEADER_DETECTOR] Sezione processata: {len(wines_data)} vini, "
+        f"produttore corrente: {current_producer or 'N/A'}"
+    )
+    
+    return df
+
+
 def parse_csv_with_multiple_headers(
     file_content: bytes,
     separator: Optional[str] = None,
@@ -246,29 +434,47 @@ def parse_csv_with_multiple_headers(
     
     for section_idx, section_bytes in sections:
         try:
-            import io
-            # Parse sezione (prima riga è header)
-            df_section = pd.read_csv(
-                io.BytesIO(section_bytes),
-                sep=separator,
-                encoding=encoding,
-                on_bad_lines='skip',
-                engine='python',
-                skipinitialspace=True,
-                dtype=str
-            )
+            # Decodifica sezione per processare righe produttori
+            section_text = section_bytes.decode(encoding, errors='ignore')
+            section_lines = section_text.split('\n')
+            section_lines = [l for l in section_lines if l.strip()]  # Rimuovi righe vuote
+            
+            if len(section_lines) < 2:
+                continue
+            
+            # Processa sezione riconoscendo righe produttori
+            df_section = process_section_with_producers(section_lines, separator, encoding)
             
             if len(df_section) > 0:
                 all_dataframes.append(df_section)
                 logger.info(
-                    f"[HEADER_DETECTOR] Sezione {section_idx} parsata: "
-                    f"{len(df_section)} righe, {len(df_section.columns)} colonne"
+                    f"[HEADER_DETECTOR] Sezione {section_idx} processata: "
+                    f"{len(df_section)} vini, {len(df_section.columns)} colonne"
                 )
         except Exception as e:
             logger.warning(
-                f"[HEADER_DETECTOR] Errore parsing sezione {section_idx}: {e}, saltata"
+                f"[HEADER_DETECTOR] Errore processing sezione {section_idx}: {e}, saltata",
+                exc_info=True
             )
-            continue
+            # Fallback: parse normale sezione
+            try:
+                import io
+                df_section = pd.read_csv(
+                    io.BytesIO(section_bytes),
+                    sep=separator,
+                    encoding=encoding,
+                    on_bad_lines='skip',
+                    engine='python',
+                    skipinitialspace=True,
+                    dtype=str
+                )
+                if len(df_section) > 0:
+                    all_dataframes.append(df_section)
+            except Exception as fallback_error:
+                logger.warning(
+                    f"[HEADER_DETECTOR] Fallback parsing fallito per sezione {section_idx}: {fallback_error}"
+                )
+                continue
     
     if not all_dataframes:
         # Nessuna sezione valida, fallback a parse normale
