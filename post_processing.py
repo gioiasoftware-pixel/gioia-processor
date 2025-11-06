@@ -430,9 +430,9 @@ async def normalize_saved_inventory(
         
         user_id = user_row[0]
         
-        # Leggi tutti i vini dalla tabella (include anche winery, qty, price per validazione nome)
+        # Leggi tutti i vini dalla tabella (include anche producer, qty, price per validazione nome)
         query = sql_text(f"""
-            SELECT id, name, winery, qty, price, region, country, classification, wine_type
+            SELECT id, name, producer, quantity, selling_price, region, country, classification, wine_type
             FROM {table_name}
             WHERE user_id = :user_id
         """)
@@ -455,11 +455,11 @@ async def normalize_saved_inventory(
         for wine in wines:
             wine_id = wine.id
             wine_name = wine.name
-            wine_winery = wine.winery
-            wine_qty = wine.qty if hasattr(wine, 'qty') else 0
-            wine_price = wine.price if hasattr(wine, 'price') else None
+            wine_producer = wine.producer if hasattr(wine, 'producer') else None
+            wine_qty = wine.quantity if hasattr(wine, 'quantity') else 0
+            wine_price = wine.selling_price if hasattr(wine, 'selling_price') else None
             
-            if is_invalid_wine_name(wine_name, wine_winery, wine_qty, wine_price):
+            if is_invalid_wine_name(wine_name, wine_producer, wine_qty, wine_price):
                 invalid_wine_ids.append(wine_id)
                 logger.debug(
                     f"[POST_PROCESSING] Vino {wine_id} marcato per rimozione: "
@@ -651,10 +651,10 @@ async def normalize_saved_inventory(
                 wines_sample.append({
                     "id": wine.id,
                     "name": wine.name,
-                    "winery": wine.winery,
+                    "producer": wine.producer if hasattr(wine, 'producer') else None,
                     "vintage": wine.vintage if hasattr(wine, 'vintage') else None,
-                    "qty": wine.qty if hasattr(wine, 'qty') else 0,
-                    "price": wine.price if hasattr(wine, 'price') else None,
+                    "qty": wine.quantity if hasattr(wine, 'quantity') else 0,
+                    "price": wine.selling_price if hasattr(wine, 'selling_price') else None,
                     "wine_type": wine.wine_type,
                     "region": wine.region,
                     "country": wine.country,
