@@ -411,26 +411,20 @@ def normalize_alcohol_content(value: Any) -> Optional[float]:
     return None
 
 
-# Lista completa di categorie/tipologie/regioni che NON devono essere nomi vino
-WINE_CATEGORIES = {
-    # Spumanti
-    'bolle', 'bolle\'', 'spumante', 'spumanti', 'champagne', 'prosecco', 'cava', 'crémant', 'cremant',
-    'brut', 'brut nature', 'demi-sec', 'sec', 'extra brut', 'extra dry', 'doux',
-    # Tipi vino
-    'rosè', 'rosé', 'rose', 'rosato', 'rosati', 'bianco', 'bianchi', 'rosso', 'rossi', 'blanc', 'rouge',
-    'passiti', 'passito', 'dolce', 'dolci', 'secco', 'secca', 'frizzante', 'frizzanti',
-    # Regioni italiane (comuni)
-    'toscana', 'piemonte', 'veneto', 'sicilia', 'sardegna', 'lombardia', 'marche', 'umbria', 'lazio',
-    'puglia', 'abruzzo', 'friuli', 'trentino', 'alto adige', 'campania', 'liguria', 'emilia', 'romagna',
-    'calabria', 'basilicata', 'molise', 'valle d\'aosta',
-    # Altri termini comuni
-    'tradition', 'classico', 'riserva', 'superiore', 'igt', 'doc', 'docg', 'vdt', 'igp'
-}
+# Importa dizionario centralizzato termini problematici
+from ingest.wine_terms_dict import (
+    ALL_PROBLEMATIC_TERMS,
+    is_problematic_term,
+    infer_wine_type_from_category,
+    get_category_description
+)
 
 
 def is_category_only(name_str: str) -> bool:
     """
     Verifica se il nome è solo una categoria/tipologia/regione senza nome vino reale.
+    
+    Usa il dizionario centralizzato wine_terms_dict per identificare termini problematici.
     
     Esempi:
     - "Bolle" → True (solo categoria)
@@ -447,28 +441,14 @@ def is_category_only(name_str: str) -> bool:
     if not name_str or not name_str.strip():
         return False
     
-    name_clean = name_str.strip().lower()
+    name_clean = name_str.strip()
     
     # Se contiene parentesi, probabilmente ha un nome vino
     if '(' in name_clean and ')' in name_clean:
         return False
     
-    # Verifica se è esattamente una categoria o contiene solo categorie
-    # Rimuovi spazi e caratteri speciali per confronto
-    name_normalized = re.sub(r'[^\w\s]', '', name_clean).strip()
-    
-    # Se è esattamente una categoria
-    if name_normalized in WINE_CATEGORIES:
-        return True
-    
-    # Se contiene solo categorie separate da spazi (es. "Bolle Brut")
-    words = name_normalized.split()
-    if len(words) <= 3:  # Massimo 3 parole
-        all_categories = all(word in WINE_CATEGORIES for word in words if len(word) > 2)
-        if all_categories:
-            return True
-    
-    return False
+    # Usa funzione helper dal dizionario centralizzato
+    return is_problematic_term(name_clean)
 
 
 def extract_wine_name_from_category_pattern(name_str: str, winery: Optional[str] = None) -> tuple[str, Optional[str]]:
@@ -505,24 +485,8 @@ def extract_wine_name_from_category_pattern(name_str: str, winery: Optional[str]
         wine_name = match.group(2).strip()
         year = match.group(3) if match.lastindex >= 3 and match.group(3) else None
         
-        # Mappa categorie comuni a tipi vino
-        category_lower = category.lower()
-        type_mapping = {
-            'bolle': 'Spumante', 'bolle\'': 'Spumante', 'spumante': 'Spumante', 'spumanti': 'Spumante',
-            'champagne': 'Spumante', 'prosecco': 'Spumante', 'cava': 'Spumante', 'crémant': 'Spumante', 'cremant': 'Spumante',
-            'brut': 'Spumante', 'brut nature': 'Spumante', 'demi-sec': 'Spumante', 'sec': 'Spumante',
-            'rosè': 'Rosato', 'rosé': 'Rosato', 'rose': 'Rosato', 'rosato': 'Rosato', 'rosati': 'Rosato',
-            'passiti': 'Altro', 'passito': 'Altro', 'dolce': 'Altro', 'dolci': 'Altro',
-            'bianco': 'Bianco', 'bianchi': 'Bianco', 'rosso': 'Rosso', 'rossi': 'Rosso',
-            'blanc': 'Bianco', 'rouge': 'Rosso',
-        }
-        
-        # Cerca match parziale nelle categorie (es. "Nomine' brut" → "brut" → "Spumante")
-        inferred_type = None
-        for cat_key, wine_type in type_mapping.items():
-            if cat_key in category_lower:
-                inferred_type = wine_type
-                break
+        # Usa dizionario centralizzato per inferire tipo vino
+        inferred_type = infer_wine_type_from_category(category)
         
         # Se il nome estratto è valido (non vuoto), usalo
         if wine_name and len(wine_name) > 0:
@@ -534,29 +498,15 @@ def extract_wine_name_from_category_pattern(name_str: str, winery: Optional[str]
     
     # ✅ NUOVO: Se il nome è solo una categoria (es. "Bolle", "Rosè"), correggilo
     if is_category_only(name_clean):
-        category_lower = name_clean.lower()
-        type_mapping = {
-            'bolle': 'Spumante', 'bolle\'': 'Spumante', 'spumante': 'Spumante', 'spumanti': 'Spumante',
-            'champagne': 'Spumante', 'prosecco': 'Spumante', 'cava': 'Spumante', 'crémant': 'Spumante', 'cremant': 'Spumante',
-            'brut': 'Spumante', 'brut nature': 'Spumante', 'demi-sec': 'Spumante', 'sec': 'Spumante',
-            'rosè': 'Rosato', 'rosé': 'Rosato', 'rose': 'Rosato', 'rosato': 'Rosato', 'rosati': 'Rosato',
-            'passiti': 'Altro', 'passito': 'Altro', 'dolce': 'Altro', 'dolci': 'Altro',
-            'bianco': 'Bianco', 'bianchi': 'Bianco', 'rosso': 'Rosso', 'rossi': 'Rosso',
-            'blanc': 'Bianco', 'rouge': 'Rosso',
-        }
-        
-        # Identifica tipo vino dalla categoria
-        inferred_type = None
-        for cat_key, wine_type in type_mapping.items():
-            if cat_key in category_lower:
-                inferred_type = wine_type
-                break
+        # Usa dizionario centralizzato per inferire tipo vino
+        inferred_type = infer_wine_type_from_category(name_clean)
+        category_desc = get_category_description(name_clean)
         
         # Usa winery come nome se disponibile, altrimenti stringa vuota (verrà filtrato)
         corrected_name = winery if winery and winery.strip() else ""
         
         logger.debug(
-            f"[NORMALIZATION] Nome è solo categoria '{name_clean}' → "
+            f"[NORMALIZATION] Nome è solo {category_desc} '{name_clean}' → "
             f"name='{corrected_name}' (da winery), type={inferred_type}"
         )
         return corrected_name, inferred_type

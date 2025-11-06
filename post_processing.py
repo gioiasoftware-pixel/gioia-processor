@@ -17,6 +17,12 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_user_table_name
 from ingest.normalization import extract_wine_name_from_category_pattern
+from ingest.wine_terms_dict import (
+    ALL_PROBLEMATIC_TERMS,
+    is_problematic_term,
+    infer_wine_type_from_category,
+    get_category_description
+)
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +304,14 @@ ERRORI DA CERCARE:
 2. Pattern "Categoria (Nome Vino)" non estratti (es. "Bolle (Dom Perignon)" dovrebbe essere "Dom Perignon")
 3. Tipi vino mancanti o errati (inferisci da nome se possibile)
 4. Dati incoerenti (vintage fuori range 1900-2099, prezzi negativi, etc.)
+
+TERMINI PROBLEMATICI (usa dizionario wine_terms_dict):
+- Categorie spumanti: Bolle, Spumante, Champagne, Prosecco, Brut, Cava, Crémant, Frizzante
+- Tipi vino: Rosso, Bianco, Rosato, Rosè, Passito, Dolce, Secco
+- Regioni: Toscana, Piemonte, Veneto, Sicilia, Bordeaux, Bourgogne, etc.
+- Classificazioni: DOC, DOCG, IGT, AOC, AOP, IGP
+- Termini tecnici: Riserva, Classico, Superiore, Vintage, Barrique
+Se il nome è SOLO uno di questi termini, usa "producer" come nome e imposta "wine_type" appropriato.
 
 IMPORTANTE - IDENTIFICA PATTERN COMUNI:
 Se vedi lo stesso errore ripetuto in molti vini (es. molti vini con "Bolle" come nome), identifica il PATTERN e suggerisci una correzione batch.

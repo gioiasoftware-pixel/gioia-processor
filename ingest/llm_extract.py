@@ -259,6 +259,14 @@ ESTRAZIONE NOME VINO DA PATTERN CATEGORIA (CRITICO):
   * "Nomine' brut (Nomine' Renard)" → name="Nomine' Renard", type="Spumante"
   * "Rosè (Chateau de Pibernon) 2022" → name="Chateau de Pibernon", type="Rosato", vintage=2022
   * "Passiti (chateau Gravas)" → name="chateau Gravas", type="Altro"
+
+TERMINI CHE NON DEVONO ESSERE NOMI VINO (usa winery come nome se disponibile):
+- Categorie spumanti: "Bolle", "Spumante", "Champagne", "Prosecco", "Brut", "Cava", "Crémant", "Frizzante"
+- Tipi vino: "Rosso", "Bianco", "Rosato", "Rosè", "Passito", "Dolce", "Secco"
+- Regioni: "Toscana", "Piemonte", "Veneto", "Sicilia", "Bordeaux", "Bourgogne", etc.
+- Classificazioni: "DOC", "DOCG", "IGT", "AOC", "AOP", "IGP"
+- Termini tecnici: "Riserva", "Classico", "Superiore", "Vintage", "Barrique"
+- Se il nome è SOLO uno di questi termini (senza parentesi), usa il campo "winery" come nome e imposta "type" appropriato
 - Se vedi righe header (es. "Indice,ID,Etichetta,Cantina..."), ignorale SOLO se sono chiaramente header
 - Se vedi righe completamente vuote (solo virgole o separatori), ignorale
 - Se una riga ha almeno: nome vino + (cantina O qty O prezzo O annata), estrai SEMPRE
