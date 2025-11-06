@@ -71,6 +71,13 @@ class ProcessingJob(Base):
     
     # Metadati
     created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    processing_method = Column(String(50))
+    
+    # Idempotenza
+    client_msg_id = Column(String(200))
+    update_id = Column(Integer)
 
 
 class LearnedProblematicTerm(Base):
