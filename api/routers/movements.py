@@ -69,58 +69,40 @@ async def process_movement_background(
             table_inventario = user_tables["inventario"]
             table_consumi = user_tables["consumi"]
 
-            # Recupera vino per nome con fuzzy matching (prima match esatto, poi parziale)
-            wine_name_lower = wine_name.lower().strip()
+            # ✅ TRANSACTIONE ATOMICA con FOR UPDATE per evitare race condition (come vecchia versione)
+            # Cerca vino nell'inventario con FOR UPDATE (lock riga) - inizia transazione
+            wine_name_pattern = f"%{wine_name}%"
             
-            # Prima prova: match esatto case-insensitive
-            find_wine_exact = sql_text(f"""
+            logger.info(
+                f"[MOVEMENT] Job {job_id}: Cercando vino '{wine_name}' (pattern: '{wine_name_pattern}') "
+                f"per user_id={user.id} in tabella {table_inventario}"
+            )
+            
+            search_wine = sql_text(f"""
                 SELECT id, name, producer, quantity 
-                FROM {table_inventario}
-                WHERE user_id = :user_id AND LOWER(name) = :wine_name_lower
-                ORDER BY id
+                FROM {table_inventario} 
+                WHERE user_id = :user_id 
+                AND (
+                    LOWER(name) LIKE LOWER(:wine_name_pattern)
+                    OR LOWER(producer) LIKE LOWER(:wine_name_pattern)
+                )
+                FOR UPDATE  -- ✅ LOCK row per serializzare accessi
                 LIMIT 1
             """)
-            res = await db.execute(find_wine_exact, {"user_id": user.id, "wine_name_lower": wine_name_lower})
-            wine_row = res.fetchone()
             
-            # Se non trovato, prova fuzzy matching (nome contiene il termine o viceversa)
-            if not wine_row:
-                # Pattern per LIKE: nome contiene il termine cercato
-                pattern = f"%{wine_name_lower}%"
-                pattern_start = f"{wine_name_lower}%"
-                
-                find_wine_fuzzy = sql_text(f"""
-                    SELECT id, name, producer, quantity 
-                    FROM {table_inventario}
-                    WHERE user_id = :user_id 
-                    AND LOWER(name) LIKE :pattern
-                    ORDER BY 
-                        CASE 
-                            WHEN LOWER(name) LIKE :pattern_start THEN 1
-                            WHEN LOWER(name) LIKE :pattern THEN 2
-                            ELSE 3
-                        END,
-                        LENGTH(name),
-                        id
-                    LIMIT 1
-                """)
-                res = await db.execute(find_wine_fuzzy, {
-                    "user_id": user.id, 
-                    "pattern": pattern,
-                    "pattern_start": pattern_start
-                })
-                wine_row = res.fetchone()
-                
-                # Log se trovato con fuzzy matching
-                if wine_row:
-                    wine_name_found = wine_row[1] if len(wine_row) > 1 else 'N/A'
-                    logger.info(
-                        f"[MOVEMENT] Job {job_id}: Fuzzy match trovato: '{wine_name}' → '{wine_name_found}'"
-                    )
+            res = await db.execute(search_wine, {
+                "user_id": user.id,
+                "wine_name_pattern": wine_name_pattern
+            })
+            wine_row = res.fetchone()
 
             if not wine_row:
+                logger.warning(
+                    f"[MOVEMENT] Job {job_id}: Wine not found | "
+                    f"telegram_id={telegram_id}, business={business_name}, "
+                    f"search_pattern='{wine_name_pattern}', table={table_inventario}"
+                )
                 err = f"Vino '{wine_name}' non trovato"
-                logger.warning(f"[MOVEMENT] Job {job_id}: {err}")
                 job.status = 'error'
                 job.error_message = err
                 job.completed_at = datetime.utcnow()
@@ -132,42 +114,55 @@ async def process_movement_background(
             wine_name_db = wine_row[1]  # name
             wine_producer = wine_row[2] if len(wine_row) > 2 else None  # producer
             quantity_before = wine_row[3] if len(wine_row) > 3 else 0  # quantity
+            
+            logger.info(
+                f"[MOVEMENT] Job {job_id}: Found wine | "
+                f"wine_id={wine_id}, wine_name='{wine_name_db}', "
+                f"quantity_before={quantity_before}, requested={quantity}"
+            )
 
             try:
+                # Calcola nuova quantità (come vecchia versione - calcolo diretto)
                 if movement_type == 'consumo':
                     if quantity_before < quantity:
-                        error_msg = "Quantità insufficiente per consumo"
-                        logger.error(f"[MOVEMENT] Job {job_id}: {error_msg}")
+                        logger.warning(
+                            f"[MOVEMENT] Job {job_id}: Insufficient quantity | "
+                            f"wine_id={wine_id}, wine_name='{wine_name_db}', "
+                            f"available={quantity_before}, requested={quantity}"
+                        )
+                        error_msg = f"Quantità insufficiente: disponibili {quantity_before}, richieste {quantity}"
                         job.status = 'error'
                         job.error_message = error_msg
                         job.completed_at = datetime.utcnow()
                         await db.commit()
                         return
-
-                    # Aggiorna inventario (decremento)
-                    update_inv = sql_text(f"""
-                        UPDATE {table_inventario}
-                        SET quantity = COALESCE(quantity, 0) - :q, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = :id
-                    """)
-                    await db.execute(update_inv, {"q": quantity, "id": wine_id})
-
+                    quantity_after = quantity_before - quantity
                 elif movement_type == 'rifornimento':
-                    # Aggiorna inventario (incremento)
-                    update_inv = sql_text(f"""
-                        UPDATE {table_inventario}
-                        SET quantity = COALESCE(quantity, 0) + :q, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = :id
-                    """)
-                    await db.execute(update_inv, {"q": quantity, "id": wine_id})
+                    quantity_after = quantity_before + quantity
                 else:
                     raise ValueError("movement_type deve essere 'consumo' o 'rifornimento'")
 
-                # Ricalcola quantità dopo (prima dell'insert per avere il valore corretto)
-                res2 = await db.execute(sql_text(f"SELECT quantity FROM {table_inventario} WHERE id=:id"), {"id": wine_id})
-                quantity_after = res2.scalar() or 0
+                # ✅ UPDATE in stessa transazione (come vecchia versione)
+                update_wine = sql_text(f"""
+                    UPDATE {table_inventario}
+                    SET quantity = :quantity_after,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :wine_id
+                """)
+                await db.execute(update_wine, {
+                    "quantity_after": quantity_after,
+                    "wine_id": wine_id
+                })
+                logger.info(f"[MOVEMENT] Job {job_id}: UPDATE inventario eseguito - quantity: {quantity_before} → {quantity_after}")
 
                 # Inserisci log movimento con schema corretto della tabella
+                quantity_change = quantity if movement_type == 'rifornimento' else -quantity
+                logger.info(
+                    f"[MOVEMENT] Job {job_id}: Inserendo log movimento - "
+                    f"wine_name='{wine_name_db}', quantity_change={quantity_change}, "
+                    f"quantity_before={quantity_before}, quantity_after={quantity_after}"
+                )
+                
                 insert_mov = sql_text(f"""
                     INSERT INTO {table_consumi}
                         (user_id, wine_name, wine_producer, movement_type, quantity_change, quantity_before, quantity_after, movement_date)
@@ -178,12 +173,15 @@ async def process_movement_background(
                     "wine_name": wine_name_db,
                     "wine_producer": wine_producer,
                     "movement_type": movement_type,
-                    "quantity_change": quantity if movement_type == 'rifornimento' else -quantity,  # Positivo per rifornimento, negativo per consumo
+                    "quantity_change": quantity_change,
                     "quantity_before": quantity_before,
                     "quantity_after": quantity_after
                 })
+                
+                logger.info(f"[MOVEMENT] Job {job_id}: INSERT log movimento eseguito")
 
                 await db.commit()
+                logger.info(f"[MOVEMENT] Job {job_id}: Commit transazione completato")
 
             except Exception as te:
                 await db.rollback()
@@ -212,6 +210,11 @@ async def process_movement_background(
             job.result_data = json.dumps(result_data)
             job.completed_at = datetime.utcnow()
             await db.commit()
+            
+            logger.info(
+                f"[MOVEMENT] Job {job_id}: Job aggiornato a 'completed' | "
+                f"result_data salvato: {json.dumps(result_data)[:200]}"
+            )
 
             log_with_context(
                 "info",
