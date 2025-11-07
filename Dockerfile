@@ -12,6 +12,9 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# Pre-copy requirements to leverage Docker layer caching
+COPY requirements.txt ./
+
 # Install Python dependencies (compile wheels, then remove build tools)
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && python -m pip install --upgrade pip --no-cache-dir \
