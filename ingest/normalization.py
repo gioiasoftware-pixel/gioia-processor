@@ -174,6 +174,30 @@ def map_headers(
         f"[NORMALIZATION] Header mapping: {len(rename_mapping)}/{len(original_columns)} columns mapped "
         f"(threshold={confidence_threshold})"
     )
+    
+    # ✅ Log dettagliato per debug: verifica mapping "Etichetta" e "Cantina"
+    if 'etichetta' in [normalize_column_name(c) for c in original_columns]:
+        etichetta_mapped = any('etichetta' in normalize_column_name(c) for c in rename_mapping.keys())
+        if etichetta_mapped:
+            etichetta_mapping = {k: v for k, v in rename_mapping.items() if 'etichetta' in normalize_column_name(k)}
+            logger.info(f"[NORMALIZATION] 'Etichetta' mappata: {etichetta_mapping}")
+        else:
+            logger.warning(
+                f"[NORMALIZATION] 'Etichetta' NON mappata! Colonne originali: {original_columns}, "
+                f"mapping: {rename_mapping}"
+            )
+    
+    if 'cantina' in [normalize_column_name(c) for c in original_columns]:
+        cantina_mapped = any('cantina' in normalize_column_name(c) for c in rename_mapping.keys())
+        if cantina_mapped:
+            cantina_mapping = {k: v for k, v in rename_mapping.items() if 'cantina' in normalize_column_name(k)}
+            logger.info(f"[NORMALIZATION] 'Cantina' mappata: {cantina_mapping}")
+        else:
+            logger.warning(
+                f"[NORMALIZATION] 'Cantina' NON mappata! Colonne originali: {original_columns}, "
+                f"mapping: {rename_mapping}"
+            )
+    
     return rename_mapping
 
 
@@ -642,6 +666,47 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
                 # ✅ RAFFORZATO: Estrai nome da pattern "Categoria (Nome Vino)" o corregge nomi solo categoria
                 winery_value = row.get('winery') if 'winery' in row else None
                 extracted_name, inferred_type = extract_wine_name_from_category_pattern(name_str, winery=winery_value)
+                
+                # ✅ FIX: Se il nome estratto è una categoria (es. "Bolle"), cerca un valore valido 
+                # nella colonna originale "Etichetta" o altre colonne che potrebbero contenere il nome vino
+                if is_category_only(extracted_name) or extracted_name == "":
+                    # Cerca colonna originale "Etichetta" o altre colonne con nome vino (case-insensitive)
+                    # Prima cerca colonne che potrebbero contenere il nome vino reale
+                    etichetta_value = None
+                    search_keys = ['etichetta', 'label', 'nome', 'wine name', 'nome vino', 'denominazione', 'prodotto', 'articolo']
+                    
+                    for key in row.keys():
+                        normalized_key = normalize_column_name(key)
+                        if normalized_key in search_keys:
+                            etichetta_raw = row.get(key)
+                            if etichetta_raw and not is_na(etichetta_raw):
+                                etichetta_str = str(etichetta_raw).strip()
+                                if etichetta_str and etichetta_str.lower() not in ['nan', 'none', 'null', 'n/a', 'na', '', 'undefined']:
+                                    # Verifica che non sia una categoria e che sia diverso dal nome estratto
+                                    if not is_category_only(etichetta_str) and etichetta_str != name_str:
+                                        etichetta_value = etichetta_str
+                                        logger.info(
+                                            f"[NORMALIZATION] Nome era categoria '{extracted_name}' (da '{name_str}'), "
+                                            f"usato valore da colonna '{key}': '{etichetta_value}'"
+                                        )
+                                        break
+                    
+                    if etichetta_value:
+                        extracted_name = etichetta_value
+                        # Mantieni il tipo inferito dalla categoria
+                        if not inferred_type:
+                            # Se non c'era tipo inferito, prova a inferirlo dalla colonna "Indice"
+                            inferred_type_from_index = extract_wine_type_from_index_column(row)
+                            if inferred_type_from_index:
+                                inferred_type = inferred_type_from_index
+                    else:
+                        # Se non trovato, log per debug
+                        logger.debug(
+                            f"[NORMALIZATION] Nome era categoria '{extracted_name}' (da '{name_str}'), "
+                            f"ma nessun valore valido trovato in colonne alternative. "
+                            f"Colonne disponibili: {list(row.keys())}"
+                        )
+                
                 normalized['name'] = extracted_name
                 
                 # Se tipo è stato inferito e non c'è già un tipo, usalo
