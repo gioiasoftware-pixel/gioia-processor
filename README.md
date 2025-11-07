@@ -81,8 +81,11 @@ gioia-processor/
 
 ### **1. Setup Locale**
 ```bash
-# Installa dipendenze
+# Installa dipendenze runtime
 pip install -r requirements.txt
+
+# (Opzionale) dipendenze test
+pip install -r requirements-dev.txt
 
 # Configura variabili ambiente
 export DATABASE_URL="postgresql://user:pass@host:port/db"
@@ -98,7 +101,7 @@ uvicorn api.main:app --reload --port 8001
 
 ### **2. Test**
 ```bash
-# Esegui tutti i test
+# Esegui tutti i test (richiede requirements-dev)
 pytest tests/
 
 # Test con coverage
