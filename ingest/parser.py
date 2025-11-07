@@ -167,9 +167,25 @@ def parse_classic(
         for index, row in df.iterrows():
             try:
                 # Converte riga in dict
+                # IMPORTANTE: Include anche colonne non mappate (come "Indice") per estrazione dati utili
                 row_dict = row.to_dict()
                 
-                # Normalizza valori
+                # Aggiungi anche colonne originali non mappate (per estrazione tipo da "Indice")
+                # Le colonne originali sono ancora nel dataframe con nomi normalizzati
+                # Cerca colonne originali che non sono state mappate (come "Indice", "ID")
+                for orig_col in original_columns:
+                    normalized_orig = normalize_column_name(orig_col)
+                    # Se la colonna normalizzata esiste nel dataframe ma non è stata mappata,
+                    # aggiungila con il nome originale (per estrazione dati utili)
+                    if normalized_orig in df.columns:
+                        # Se non è stata mappata (non è nel row_dict con nome standard),
+                        # aggiungila con il nome originale
+                        if orig_col not in row_dict and normalized_orig not in row_dict:
+                            # Usa il valore dalla colonna normalizzata nel dataframe
+                            if normalized_orig in row.index:
+                                row_dict[orig_col] = row[normalized_orig]
+                
+                # Normalizza valori (ora include anche colonne non mappate come "Indice")
                 normalized_row = normalize_values(row_dict)
                 
                 # Filtra SOLO righe chiaramente vuote o placeholder

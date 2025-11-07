@@ -99,8 +99,19 @@ def map_headers(
     # Priorità: "Q cantina" ha priorità su "Q iniziale" per qty
     qty_priority_columns = ['q cantina', 'q. cantina', 'quantità cantina', 'q disponibile', 'q stock']
     
+    # Colonne da ignorare completamente (non mappare come header, ma i dati possono essere utili)
+    ignored_columns = ['indice', 'index', 'idx', 'id']
+    
     for orig_col in original_columns:
         normalized_col = normalize_column_name(orig_col)
+        
+        # Ignora colonne "Indice" e "ID" dal mapping (ma i dati rimangono nel dataframe)
+        if normalized_col in ignored_columns:
+            logger.debug(
+                f"[NORMALIZATION] Colonna '{orig_col}' ignorata dal mapping header "
+                f"(ma i dati saranno disponibili per estrazione tipo vino)"
+            )
+            continue
         
         # Usa rapidfuzz per trovare match migliore
         if target_list:
@@ -553,14 +564,63 @@ def extract_wine_name_from_category_pattern(name_str: str, winery: Optional[str]
     return name_clean, None
 
 
+def extract_wine_type_from_index_column(row: Dict[str, Any]) -> Optional[str]:
+    """
+    Estrae tipo vino dalla colonna "Indice" (o simile) se contiene dati utili.
+    
+    La colonna "Indice" viene ignorata come header, ma può contenere informazioni utili
+    come "bolla", "bianco", "rosso", "passito" che possono essere usate per inferire il tipo di vino.
+    
+    Args:
+        row: Dict con dati riga (può contenere colonne non mappate come "Indice")
+    
+    Returns:
+        Tipo vino inferito (es. "Spumante", "Bianco", "Rosso", "Passito") o None
+    """
+    # Cerca colonna "Indice" (case-insensitive, anche normalizzata)
+    index_col_key = None
+    for key in row.keys():
+        normalized_key = normalize_column_name(key)
+        if normalized_key in ['indice', 'index', 'idx']:
+            index_col_key = key
+            break
+    
+    if not index_col_key:
+        return None
+    
+    index_value = row.get(index_col_key)
+    if is_na(index_value) or not index_value:
+        return None
+    
+    index_str = str(index_value).strip().lower()
+    if not index_str or index_str in ['nan', 'none', 'null', 'n/a', 'na', '']:
+        return None
+    
+    # Usa dizionario centralizzato per inferire tipo vino
+    from ingest.wine_terms_dict import infer_wine_type_from_category
+    
+    inferred_type = infer_wine_type_from_category(index_str, use_learned=True)
+    
+    if inferred_type:
+        logger.debug(
+            f"[NORMALIZATION] Estratto tipo vino da colonna 'Indice': "
+            f"'{index_value}' → type='{inferred_type}'"
+        )
+        return inferred_type
+    
+    return None
+
+
 def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normalizza valori riga secondo schema WineItemModel esteso.
     
     Applica normalizzazione a tutti i campi: vintage, qty, price, type, grape_variety, region, country, etc.
+    Estrae anche dati utili da colonne non mappate come "Indice" per inferire il tipo di vino.
     
     Args:
-        row: Dict con dati riga (chiavi possono essere mappate a vari campi)
+        row: Dict con dati riga (chiavi possono essere mappate a vari campi, 
+             ma può contenere anche colonne non mappate come "Indice")
     
     Returns:
         Dict con valori normalizzati (tutti i campi WineItemModel)
@@ -628,6 +688,12 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
         normalized['type'] = normalize_wine_type(row['type'])
     else:
         normalized['type'] = None
+    
+    # ✅ Estrai tipo vino da colonna "Indice" se type non è già presente
+    if not normalized.get('type'):
+        inferred_type_from_index = extract_wine_type_from_index_column(row)
+        if inferred_type_from_index:
+            normalized['type'] = inferred_type_from_index
     
     # Nuovi campi aggiuntivi
     # Grape variety (uvaggio)
