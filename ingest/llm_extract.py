@@ -53,7 +53,9 @@ def prepare_text_input(
     Returns:
         Testo significativo pronto per LLM
     """
-    max_bytes = 80 * 1024  # 80 KB max
+    # Aumentato limite per file grandi (500 KB invece di 80 KB)
+    # Questo permette di processare file con molti vini senza troncarli
+    max_bytes = 500 * 1024  # 500 KB max (era 80 KB)
     
     try:
         if ext in ['csv', 'tsv', 'txt']:
@@ -128,9 +130,14 @@ def prepare_text_input(
                     lines.append(row_text)
                 text = '\n'.join(lines)
                 
-                # Limita a 80 KB
-                if len(text.encode('utf-8')) > max_bytes:
-                    text = text[:max_bytes]
+                # Limita a max_bytes (500 KB)
+                text_bytes = text.encode('utf-8')
+                if len(text_bytes) > max_bytes:
+                    logger.warning(
+                        f"[LLM_EXTRACT] Testo Excel troppo grande ({len(text_bytes)} bytes > {max_bytes}), "
+                        f"troncato a {max_bytes} bytes"
+                    )
+                    text = text_bytes[:max_bytes].decode('utf-8', errors='ignore')
                 
                 logger.debug(f"[LLM_EXTRACT] Excel serialized to text: {len(lines)} lines")
                 return text
@@ -641,20 +648,48 @@ async def extract_llm_mode(
             logger.error("[LLM_EXTRACT] Testo vuoto dopo preparazione")
             return [], {'error': 'Testo vuoto'}, 'error'
         
-        # 2. Chunking se >80 KB
+        # 2. Chunking se >40 KB (chunk_size)
+        text_bytes = len(text.encode('utf-8'))
+        logger.info(f"[LLM_EXTRACT] Testo preparato: {text_bytes} bytes, {len(text.split(chr(10)))} righe")
+        
         chunks = chunk_text(text, chunk_size=40 * 1024, overlap=1000)
+        logger.info(f"[LLM_EXTRACT] File diviso in {len(chunks)} chunk(s) per processing")
         
         # 3. Estrae da ogni chunk
         all_wines = []
+        chunks_processed = 0
+        chunks_failed = 0
+        
         for chunk_idx, chunk in enumerate(chunks):
             try:
+                chunk_size_bytes = len(chunk.encode('utf-8'))
+                chunk_lines = len(chunk.split('\n'))
+                logger.info(
+                    f"[LLM_EXTRACT] Processing chunk {chunk_idx + 1}/{len(chunks)}: "
+                    f"{chunk_size_bytes} bytes, ~{chunk_lines} righe"
+                )
+                
                 wines_chunk = await extract_with_llm(chunk, telegram_id=telegram_id, correlation_id=correlation_id)
                 all_wines.extend(wines_chunk)
-                logger.info(f"[LLM_EXTRACT] Chunk {chunk_idx + 1}/{len(chunks)}: {len(wines_chunk)} vini estratti")
+                chunks_processed += 1
+                
+                logger.info(
+                    f"[LLM_EXTRACT] Chunk {chunk_idx + 1}/{len(chunks)} completato: "
+                    f"{len(wines_chunk)} vini estratti (totale accumulato: {len(all_wines)})"
+                )
             except Exception as e:
-                logger.warning(f"[LLM_EXTRACT] Errore chunk {chunk_idx + 1}: {e}")
+                chunks_failed += 1
+                logger.error(
+                    f"[LLM_EXTRACT] Errore chunk {chunk_idx + 1}/{len(chunks)}: {e}",
+                    exc_info=True
+                )
                 # Alert costi LLM per ogni chunk (gestito in extract_with_llm)
                 continue
+        
+        logger.info(
+            f"[LLM_EXTRACT] Processing chunk completato: {chunks_processed}/{len(chunks)} successi, "
+            f"{chunks_failed} falliti, {len(all_wines)} vini totali estratti"
+        )
         
         logger.info(f"[LLM_EXTRACT] Totale vini estratti da tutti i chunk: {len(all_wines)}")
         

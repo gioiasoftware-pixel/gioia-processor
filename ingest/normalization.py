@@ -116,9 +116,22 @@ def map_headers(
                 if standard_name not in mapped_standard_names:
                     rename_mapping[orig_col] = standard_name
                     mapped_standard_names.add(standard_name)
-                    logger.debug(
+                    logger.info(
                         f"[NORMALIZATION] Mapped '{orig_col}' -> '{standard_name}' "
-                        f"(confidence={score/100:.2f})"
+                        f"(confidence={score/100:.2f}, threshold={confidence_threshold})"
+                    )
+                else:
+                    logger.debug(
+                        f"[NORMALIZATION] Skipped '{orig_col}' -> '{standard_name}': "
+                        f"campo '{standard_name}' già mappato a altra colonna"
+                    )
+            else:
+                # Log dettagliato per colonne non mappate (soprattutto "Etichetta")
+                if 'etichetta' in orig_col.lower() or 'etichetta' in normalized_col:
+                    logger.warning(
+                        f"[NORMALIZATION] 'Etichetta' NON mappata! "
+                        f"Colonna originale: '{orig_col}', normalizzata: '{normalized_col}', "
+                        f"threshold: {confidence_threshold}, best match: {process.extractOne(normalized_col, target_list, scorer=fuzz.ratio) if target_list else 'N/A'}"
                     )
     
     logger.info(

@@ -209,9 +209,18 @@ async def _process_csv_excel_path(
     stage_used = 'unknown'
     
     # Stage 0.5: Identificazione header senza AI (solo per CSV/TSV)
+    wines_data_stage_0_5_backup = []
     if ext in ['csv', 'tsv']:
         try:
             logger.info(f"[PIPELINE] Stage 0.5: Starting header identification for {file_name}")
+            log_json(
+                level='info',
+                message=f"Stage 0.5 starting for {file_name}",
+                file_name=file_name,
+                ext=ext,
+                stage='header_identifier_stage_0_5'
+            )
+            
             wines_data_stage_0_5, metrics_stage_0_5 = identify_headers_and_extract(
                 file_content=file_content,
                 file_name=file_name,
@@ -220,10 +229,21 @@ async def _process_csv_excel_path(
             
             headers_found = metrics_stage_0_5.get('headers_found', 0)
             wines_extracted = metrics_stage_0_5.get('wines_extracted', 0)
+            rows_processed = metrics_stage_0_5.get('rows_processed', 0)
             
             logger.info(
                 f"[PIPELINE] Stage 0.5: {headers_found} header trovati, "
-                f"{wines_extracted} vini estratti"
+                f"{wines_extracted} vini estratti da {rows_processed} righe processate"
+            )
+            log_json(
+                level='info',
+                message=f"Stage 0.5 completed: {headers_found} headers, {wines_extracted} wines",
+                file_name=file_name,
+                ext=ext,
+                stage='header_identifier_stage_0_5',
+                headers_found=headers_found,
+                wines_extracted=wines_extracted,
+                rows_processed=rows_processed
             )
             
             # Se Stage 0.5 ha trovato header e estratto vini, usa quelli
@@ -235,6 +255,11 @@ async def _process_csv_excel_path(
                 
                 # Se abbiamo almeno 50% di vini validi, salva
                 valid_ratio = len(wines_data) / wines_extracted if wines_extracted > 0 else 0
+                
+                logger.info(
+                    f"[PIPELINE] Stage 0.5: {len(wines_data)}/{wines_extracted} vini validi "
+                    f"(valid_ratio={valid_ratio:.2f}, threshold=0.5, min_wines=10)"
+                )
                 
                 if valid_ratio >= 0.5 and len(wines_data) >= 10:
                     decision = 'save'
@@ -253,19 +278,28 @@ async def _process_csv_excel_path(
                 else:
                     logger.info(
                         f"[PIPELINE] Stage 0.5 insufficiente: {len(wines_data)} vini validi "
-                        f"(valid_ratio={valid_ratio:.2f}) → continua a Stage 1"
+                        f"(valid_ratio={valid_ratio:.2f}, min_wines={len(wines_data)} < 10) → continua a Stage 1"
                     )
                     # Continua a Stage 1, ma mantieni i vini di Stage 0.5 per unirli dopo
                     wines_data_stage_0_5_backup = wines_data.copy()
             else:
-                logger.info(
-                    f"[PIPELINE] Stage 0.5: nessun header trovato o vini estratti → continua a Stage 1"
+                logger.warning(
+                    f"[PIPELINE] Stage 0.5: nessun header trovato ({headers_found}) o vini estratti ({wines_extracted}) → continua a Stage 1"
                 )
                 wines_data_stage_0_5_backup = []
         except Exception as e:
-            logger.warning(f"[PIPELINE] Stage 0.5 failed: {e}, continuing to Stage 1")
+            logger.error(f"[PIPELINE] Stage 0.5 failed: {e}", exc_info=True)
+            log_json(
+                level='error',
+                message=f"Stage 0.5 failed: {str(e)}",
+                file_name=file_name,
+                ext=ext,
+                stage='header_identifier_stage_0_5',
+                error=str(e)
+            )
             wines_data_stage_0_5_backup = []
     else:
+        logger.debug(f"[PIPELINE] Stage 0.5 skipped: ext={ext} (solo CSV/TSV)")
         wines_data_stage_0_5_backup = []
     
     # Stage 1: Parse classico

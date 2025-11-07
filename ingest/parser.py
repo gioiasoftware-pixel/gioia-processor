@@ -117,11 +117,30 @@ def parse_classic(
         df.columns = [normalize_column_name(col) for col in df.columns]
         
         # Header mapping: usa rapidfuzz per mappare a colonne standard
+        logger.info(f"[PARSER] Original columns: {original_columns}")
+        logger.info(f"[PARSER] Using confidence threshold: {config.header_confidence_th}")
+        
         header_mapping = map_headers(
             original_columns,
             confidence_threshold=config.header_confidence_th,
             use_extended=True
         )
+        
+        logger.info(f"[PARSER] Header mapping result: {header_mapping}")
+        
+        # Verifica se "Etichetta" è stata mappata
+        etichetta_mapped = False
+        for orig_col, std_col in header_mapping.items():
+            if 'etichetta' in orig_col.lower() or 'etichetta' in normalize_column_name(orig_col):
+                etichetta_mapped = True
+                logger.info(f"[PARSER] 'Etichetta' trovata e mappata: '{orig_col}' → '{std_col}'")
+                break
+        
+        if not etichetta_mapped:
+            logger.warning(
+                f"[PARSER] 'Etichetta' NON mappata! Colonne originali: {original_columns}, "
+                f"mapping: {header_mapping}, threshold: {config.header_confidence_th}"
+            )
         
         # Applica mapping (rinomina colonne)
         if header_mapping:
@@ -135,7 +154,7 @@ def parse_classic(
             
             # Rinomina colonne
             df = df.rename(columns=reverse_mapping)
-            logger.info(f"[PARSER] Header mapping applied: {len(header_mapping)} columns mapped")
+            logger.info(f"[PARSER] Header mapping applied: {len(header_mapping)} columns mapped → {list(df.columns)}")
         
         # Calcola schema_score (prima della normalizzazione valori)
         schema_score = calculate_schema_score(df)

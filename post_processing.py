@@ -881,10 +881,19 @@ async def normalize_saved_inventory(
                     if wine_index < len(wines_sample):
                         wine_id_to_update = wines_sample[wine_index]["id"]
                         
+                        # Mappa "price" a "selling_price" (nome colonna nel DB)
+                        db_field = field
+                        if field == "price":
+                            db_field = "selling_price"
+                            logger.debug(
+                                f"[POST_PROCESSING] Job {job_id}: Mappato campo 'price' → 'selling_price' "
+                                f"per vino {wine_id_to_update}"
+                            )
+                        
                         # Costruisci UPDATE dinamico
                         update_query = sql_text(f"""
                             UPDATE {table_name}
-                            SET {field} = :new_value, updated_at = CURRENT_TIMESTAMP
+                            SET {db_field} = :new_value, updated_at = CURRENT_TIMESTAMP
                             WHERE id = :wine_id AND user_id = :user_id
                         """)
                         await session.execute(update_query, {
