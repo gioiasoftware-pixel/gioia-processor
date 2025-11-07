@@ -83,3 +83,4 @@ Obiettivo: individuare i punti in cui l’attuale pipeline tende a cancellare, t
 
 Con questo studio possiamo procedere a semplificare e “irrobustire” il processor evitando che le varie fasi annullino o distorcano i dati originali. Fammi sapere da quale step vuoi partire e implemento. 
 
+

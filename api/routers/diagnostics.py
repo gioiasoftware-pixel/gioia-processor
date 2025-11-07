@@ -12,6 +12,7 @@ from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import User, ensure_user_tables, get_db
+from core.diagnostics_state import get_snapshot as get_diagnostics_snapshot
 from ingest.header_identifier import identify_headers_and_extract
 from ingest.llm_extract import deduplicate_wines
 from ingest.parser import parse_classic
@@ -21,6 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/diagnostics", tags=["diagnostics"])
+
+
+@router.get("/summary")
+async def diagnostics_summary():
+    """Ritorna metriche aggregate sull'elaborazione recente."""
+    return {"status": "ok", "metrics": get_diagnostics_snapshot()}
 
 
 def _normalize_key(value: Any) -> str:

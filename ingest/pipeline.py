@@ -8,6 +8,7 @@ import logging
 import time
 from typing import List, Dict, Any, Optional, Tuple
 from core.config import get_config
+from core.diagnostics_state import increment as increment_diag
 from core.logger import log_json, set_request_context, get_request_context
 from ingest.gate import route_file
 from ingest.header_identifier import identify_headers_and_extract
@@ -87,6 +88,10 @@ async def process_file(
     decision = 'error'
     stage_used = 'unknown'
     
+    original_columns_stage1: List[str] = []
+    column_samples_stage1: Dict[str, List[str]] = {}
+    header_mapping_stage1: Dict[str, Dict[str, Any]] = {}
+
     try:
         # Stage 0: Routing
         logger.info(f"[PIPELINE] Starting processing: {file_name} (ext={ext})")
@@ -365,11 +370,12 @@ async def _process_csv_excel_path(
             stage1_wines = wines_data if wines_data else []
             stage1_schema_score = metrics.get('schema_score', 0.0)
             stage1_valid_rows = metrics.get('valid_rows', 0.0)
-            original_columns = metrics.get('original_columns', [])
-            
+
             wines_data, metrics_stage2, decision = await apply_targeted_ai(
                 wines_data=stage1_wines,
-                original_columns=original_columns,
+                original_columns=original_columns_stage1,
+                header_mapping=header_mapping_stage1,
+                column_samples=column_samples_stage1,
                 schema_score=stage1_schema_score,
                 valid_rows=stage1_valid_rows,
                 file_name=file_name,
@@ -396,12 +402,38 @@ async def _process_csv_excel_path(
         logger.info(f"[PIPELINE] Stage 2 disabled (IA_TARGETED_ENABLED=false), skipping to Stage 3")
         decision = 'escalate_to_stage3'
     
+    guardrail_stage3_skipped = False
+    if decision == 'escalate_to_stage3':
+        stage1_schema = metrics.get('schema_score', 0.0)
+        stage1_valid_ratio = metrics.get('valid_rows', 0.0)
+        missing_required = metrics.get('missing_required_fields', [])
+
+        if (
+            stage1_schema >= config.schema_score_th
+            and stage1_valid_ratio >= config.min_valid_rows
+            and not missing_required
+        ):
+            guardrail_stage3_skipped = True
+            decision = 'save'
+            stage_used = 'csv_excel_parse'
+            logger.info(
+                "[PIPELINE] Guardrail Stage 3 attivato: schema_score=%.2f valid_rows=%.2f",
+                stage1_schema,
+                stage1_valid_ratio
+            )
+
+    metrics['guardrail_stage3_skipped'] = guardrail_stage3_skipped
+    if guardrail_stage3_skipped:
+        increment_diag('stage3.guardrail_skips')
+        return wines_data, metrics, decision, stage_used
+
     # Stage 3: LLM mode (se abilitato e escalate da Stage 2)
     # SOLUZIONE 1 (IBRIDO): Salva vini da stage precedenti (Stage 1 o Stage 2) per unirli con Stage 3
     # Usa i vini migliorati da Stage 2 se disponibili, altrimenti quelli di Stage 1
     previous_stage_wines = wines_data.copy() if wines_data else []  # Salva vini prima di Stage 3
     
     if decision == 'escalate_to_stage3' and config.llm_fallback_enabled:
+        increment_diag('stage3.attempts')
         try:
             logger.info(f"[PIPELINE] Stage 3: Starting LLM mode for {file_name}")
             wines_data_stage3, metrics_stage3, decision = await extract_llm_mode(
@@ -447,7 +479,8 @@ async def _process_csv_excel_path(
                     # Nessun vino da stage precedenti, usa solo Stage 3
                     wines_data = wines_data_stage3
                     logger.info(f"[PIPELINE] Stage 3 SUCCESS: {len(wines_data)} wines extracted (no previous stage data to merge)")
-                
+                increment_diag('stage3.success')
+
                 return wines_data, metrics, decision, stage_used
             else:
                 logger.error(f"[PIPELINE] Stage 3 FAILED: decision={decision}")
@@ -460,11 +493,13 @@ async def _process_csv_excel_path(
                     wines_data = previous_stage_wines
                     decision = 'save'  # Salva comunque i vini di stage precedenti
                     metrics['fallback_to_previous_stage'] = True
+                    increment_diag('stage3.fallback_previous')
                     return wines_data, metrics, decision, 'llm_mode_fallback_previous'
                 return wines_data_stage3, metrics, decision, stage_used
         except Exception as e:
             logger.error(f"[PIPELINE] Stage 3 failed: {e}", exc_info=True)
             metrics['stage3_error'] = str(e)
+            increment_diag('stage3.errors')
             decision = 'error'
             return [], metrics, decision, 'llm_mode_error'
     elif decision == 'escalate_to_stage3' and not config.llm_fallback_enabled:

@@ -1,342 +1,393 @@
-"""
-Parser orchestratore per Stage 1 (Parse classico NO IA).
+"""Parser orchestratore per Stage 1 (parse classico, modalità SAFE per default)."""
 
-Orchestra parsing CSV/Excel, normalizzazione, validazione e calcolo metriche.
-"""
-import time
+from __future__ import annotations
+
 import logging
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 import pandas as pd
-from typing import Tuple, Dict, Any, List, Optional
-from core.config import get_config
+from rapidfuzz import fuzz
+from scipy.optimize import linear_sum_assignment
+
+from core.config import ProcessorConfig, get_config
 from core.logger import log_json
-from ingest.gate import route_file
-from ingest.csv_parser import parse_csv
 from ingest.excel_parser import parse_excel
+from ingest.gate import route_file
 from ingest.header_detector import parse_csv_with_multiple_headers
-from ingest.normalization import (
-    normalize_column_name,
-    map_headers,
-    normalize_values
-)
-from ingest.validation import validate_batch, WineItemModel, wine_model_to_dict
+from ingest.dedup import deduplicate
+from ingest.normalization import normalize_wine_row
+from ingest.supplier_resolver import resolve_supplier_producer
+from ingest.types import WineRow, fv
+from ingest.validation import validate_batch, wine_model_to_dict
 
 logger = logging.getLogger(__name__)
 
-# Colonne target richieste (conforme a "Update processor.md")
-TARGET_COLUMNS = ['name', 'winery', 'vintage', 'qty', 'price', 'type']
-REQUIRED_COLUMNS = ['name', 'qty']  # Colonne obbligatorie
-OPTIONAL_COLUMNS = ['winery', 'vintage', 'price', 'type']  # Colonne opzionali
+TARGET_COLUMNS = ["name", "winery", "vintage", "qty", "price", "type"]
+REQUIRED_COLUMNS = ["name", "qty"]
+
+DATABASE_FIELDS = [
+    "name",
+    "winery",
+    "supplier",
+    "vintage",
+    "qty",
+    "price",
+    "type",
+    "grape_variety",
+    "region",
+    "country",
+    "classification",
+    "cost_price",
+    "alcohol_content",
+    "description",
+    "notes",
+]
+
+SYNONYMS: Dict[str, List[str]] = {
+    "name": ["etichetta", "label", "prodotto", "articolo", "descrizione breve", "vino"],
+    "winery": ["cantina", "produttore", "azienda", "azienda agricola", "domain", "domaine"],
+    "supplier": ["fornitore", "distributore", "importatore", "grossista", "supplier", "wholesaler"],
+    "vintage": ["annata", "millésime", "year", "anno"],
+    "qty": ["qta", "quantita", "quantità", "pezzi", "bottiglie", "btl", "stock"],
+    "price": ["prezzo", "prezzo unitario", "p.u.", "€/pz", "costo", "listino"],
+    "type": ["tipologia", "colore", "style", "rosso", "bianco", "rosé", "metodo"],
+    "grape_variety": ["uvaggio", "vitigno", "grape variety", "varietà uva"],
+    "region": ["regione", "zona", "area", "territorio"],
+    "country": ["paese", "nazione", "origine", "country"],
+    "classification": ["doc", "docg", "igt", "denominazione", "aoc"],
+    "cost_price": ["costo", "prezzo acquisto", "costo unitario"],
+    "alcohol_content": ["gradazione", "%vol", "alcol", "alcohol"],
+    "description": ["descrizione", "note degustative", "dettagli"],
+    "notes": ["note", "annotazioni", "osservazioni"],
+}
+
+TYPE_MAP = {
+    "rosso": "Rosso",
+    "red": "Rosso",
+    "bianco": "Bianco",
+    "white": "Bianco",
+    "rosato": "Rosato",
+    "rosé": "Rosato",
+    "rose": "Rosato",
+    "spumante": "Spumante",
+    "sparkling": "Spumante",
+}
 
 
-def calculate_schema_score(df: pd.DataFrame) -> float:
-    """
-    Calcola schema_score: colonne target coperte / 6 (o 5 se winery/type opzionali).
-    
-    Conforme a "Update processor.md" - Stage 1: Metriche.
-    
-    Args:
-        df: DataFrame con colonne normalizzate
-    
-    Returns:
-        schema_score (0.0-1.0)
-    """
-    df_columns = set(df.columns)
-    
-    # Conta colonne target presenti
-    target_covered = 0
-    for col in TARGET_COLUMNS:
-        if col in df_columns:
-            target_covered += 1
-    
-    # Schema score = colonne coperte / totale target
-    # Usa 6 come denominatore (tutte le colonne target)
-    schema_score = target_covered / len(TARGET_COLUMNS)
-    
-    logger.debug(
-        f"[PARSER] Schema score: {target_covered}/{len(TARGET_COLUMNS)} columns covered = {schema_score:.2f}"
-    )
-    
-    return schema_score
+def calculate_schema_score(mapping: Dict[str, Dict[str, Any]]) -> float:
+    mapped_fields = {
+        info["field"]
+        for info in mapping.values()
+        if info.get("field") in TARGET_COLUMNS
+    }
+    return len(mapped_fields) / len(TARGET_COLUMNS) if TARGET_COLUMNS else 0.0
+
+
+def col_score(colname: str, field: str) -> float:
+    base = fuzz.token_set_ratio(colname.lower(), field)
+    syn_scores = [
+        fuzz.token_set_ratio(colname.lower(), synonym)
+        for synonym in SYNONYMS.get(field, [])
+    ]
+    best_syn = max(syn_scores + [0])
+    return max(base, best_syn) / 100.0
+
+
+def map_headers_v2(columns: List[str], cfg: ProcessorConfig) -> Dict[str, Dict[str, Any]]:
+    m = len(columns)
+    n = len(DATABASE_FIELDS)
+    size = max(m, n)
+    cost = np.ones((size, size))
+    scores = np.zeros((size, size))
+
+    for i, column in enumerate(columns):
+        for j, field in enumerate(DATABASE_FIELDS):
+            score = col_score(column, field)
+            scores[i, j] = score
+            cost[i, j] = 1.0 - score
+
+    row_ind, col_ind = linear_sum_assignment(cost)
+    mapping: Dict[str, Dict[str, Any]] = {}
+
+    for r, c in zip(row_ind, col_ind):
+        if r < m and c < n:
+            score = float(scores[r, c])
+            field = DATABASE_FIELDS[c] if score >= cfg.header_confidence_th else None
+            mapping[columns[r]] = {"field": field, "score": score}
+
+    for column in columns:
+        mapping.setdefault(column, {"field": None, "score": 0.0})
+
+    return mapping
+
+
+def _resolve_field_column(mapping: Dict[str, Dict[str, Any]], field: str) -> Optional[str]:
+    for column, info in mapping.items():
+        if info.get("field") == field:
+            return column
+    return None
+
+
+def parse_dataframe(
+    df: pd.DataFrame, cfg: ProcessorConfig, source_file: str
+) -> Tuple[List[WineRow], Dict[str, Dict[str, Any]]]:
+    columns = list(df.columns)
+    mapping = map_headers_v2(columns, cfg)
+    lower_lookup = {str(col).lower(): col for col in columns}
+    rows: List[WineRow] = []
+
+    for idx, series in df.iterrows():
+        lineage_base = {"row": int(idx) if isinstance(idx, (int, float)) else 0, "file": source_file}
+
+        def get_fv(field: str, fallbacks: Optional[List[str]] = None):
+            column = _resolve_field_column(mapping, field)
+            if column is not None and column in series:
+                value = series[column]
+                score = float(mapping[column]["score"])
+                return fv(value, score, "stage1", {**lineage_base, "column": column})
+
+            for fb in fallbacks or []:
+                candidate = lower_lookup.get(fb.lower())
+                if candidate is not None and candidate in series:
+                    value = series[candidate]
+                    if value not in (None, ""):
+                        return fv(value, 0.4, "stage1", {**lineage_base, "column": candidate})
+
+            return fv(None, 0.0, "stage1", {**lineage_base, "column": None})
+
+        wine_row = WineRow(
+            name=get_fv("name", ["Etichetta", "Label", "Descrizione", "Descrizione breve"]),
+            winery=get_fv("winery", ["Cantina", "Produttore", "Azienda"]),
+            supplier=get_fv("supplier", ["Fornitore", "Distributore", "Importatore"]),
+            vintage=get_fv("vintage", ["Annata", "Anno"]),
+            qty=get_fv("qty", ["Quantità", "Qta", "Bottiglie", "Pezzi"]),
+            price=get_fv("price", ["Prezzo", "Prezzo Unitario", "€/pz", "Costo"]),
+            type=get_fv("type", ["Tipologia", "Colore"]),
+            grape_variety=get_fv("grape_variety", ["Vitigno", "Uvaggio"]),
+            region=get_fv("region", ["Regione"]),
+            country=get_fv("country", ["Paese", "Nazione"]),
+            classification=get_fv("classification", ["DOC", "DOCG", "IGT"]),
+            cost_price=get_fv("cost_price", ["Costo", "Prezzo acquisto"]),
+            alcohol_content=get_fv("alcohol_content", ["Alcol", "%Vol"]),
+            description=get_fv("description", ["Descrizione", "Note"]),
+            notes=get_fv("notes", ["Note", "Osservazioni"]),
+        )
+
+        wine_row.raw_name = str(wine_row.name.value) if wine_row.name.value not in (None, "") else None
+        wine_row.raw_winery = str(wine_row.winery.value) if wine_row.winery.value not in (None, "") else None
+        wine_row.raw_supplier = (
+            str(wine_row.supplier.value) if wine_row.supplier.value not in (None, "") else None
+        )
+        wine_row.source_file = source_file
+        wine_row.source_row = lineage_base["row"]
+
+        rows.append(wine_row)
+
+    return rows, mapping
+
+
+def _is_row_empty(row: WineRow) -> bool:
+    name = row.name.value.strip() if isinstance(row.name.value, str) else ""
+    if name:
+        return False
+
+    checks = [
+        row.winery.value,
+        row.supplier.value,
+        row.qty.value,
+        row.price.value,
+        row.vintage.value,
+        row.description.value,
+        row.notes.value,
+    ]
+    return all(value in (None, "") for value in checks)
+
+
+def _coerce_number(value: Any) -> Optional[float]:
+    if value in (None, "", float("nan")):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        text = str(value)
+        text = text.replace("€", "").replace(" ", "")
+        text = text.replace(".", "").replace(",", ".")
+        for token in text.split():
+            try:
+                return float(token)
+            except ValueError:
+                continue
+        return float(text)
+    except Exception:
+        return None
+
+
+def wine_row_to_payload(row: WineRow) -> Dict[str, Any]:
+    def _sanitize(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        return str(value).strip()
+
+    qty_value = _coerce_number(row.qty.value)
+    price_value = _coerce_number(row.price.value)
+    vintage_value = _coerce_number(row.vintage.value)
+
+    wine_type = row.type.value.lower() if isinstance(row.type.value, str) else row.type.value
+    mapped_type = TYPE_MAP.get(wine_type) if isinstance(wine_type, str) else None
+
+    payload = {
+        "name": str(row.name.value).strip() if isinstance(row.name.value, str) else "",
+        "winery": _sanitize(row.winery.value),
+        "supplier": _sanitize(row.supplier.value),
+        "vintage": int(vintage_value) if vintage_value is not None else None,
+        "qty": int(qty_value) if qty_value is not None else 0,
+        "price": float(price_value) if price_value is not None else None,
+        "type": mapped_type,
+        "grape_variety": _sanitize(row.grape_variety.value),
+        "region": _sanitize(row.region.value),
+        "country": _sanitize(row.country.value),
+        "classification": _sanitize(row.classification.value),
+        "cost_price": _coerce_number(row.cost_price.value),
+        "alcohol_content": _coerce_number(row.alcohol_content.value),
+        "description": _sanitize(row.description.value),
+        "notes": _sanitize(row.notes.value),
+        "source_stage": "stage1",
+    }
+
+    if payload["cost_price"] is not None:
+        payload["cost_price"] = float(payload["cost_price"])
+    if payload["alcohol_content"] is not None:
+        payload["alcohol_content"] = float(payload["alcohol_content"])
+
+    return payload
 
 
 def parse_classic(
     file_content: bytes,
     file_name: str,
-    ext: Optional[str] = None
+    ext: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
-    """
-    Orchestratore Stage 1: Parse classico (NO IA).
-    
-    Flow:
-    1. Routing (gate.py)
-    2. Parse (csv_parser o excel_parser)
-    3. Header cleaning (normalization)
-    4. Header mapping (normalization con rapidfuzz)
-    5. Value normalization (normalization)
-    6. Validation (validation.py)
-    7. Calcolo metriche (schema_score, valid_rows)
-    8. Decisione (passare a Stage 2 o SALVA)
-    
-    Conforme a "Update processor.md" - Stage 1: Parse classico.
-    
-    Args:
-        file_content: Contenuto file (bytes)
-        file_name: Nome file
-        ext: Estensione file (se None, estrae da file_name)
-    
-    Returns:
-        Tuple (wines_data, metrics, decision):
-        - wines_data: Lista dict con vini validi (WineItemModel convertiti)
-        - metrics: Dict con metriche (schema_score, valid_rows, rows_total, rows_valid, etc.)
-        - decision: 'save' se OK, 'escalate_to_stage2' se necessario Stage 2
-    """
     start_time = time.time()
     config = get_config()
-    
+
     try:
-        # Stage 0: Routing
         stage, ext_normalized = route_file(file_content, file_name, ext)
-        
-        if stage != 'csv_excel':
+        if stage != "csv_excel":
             raise ValueError(f"File routed to {stage}, expected csv_excel for Stage 1")
-        
-        # Stage 1: Parse
-        # Per CSV: usa parser con rilevamento header multipli
-        if ext_normalized in ['csv', 'tsv']:
+
+        if ext_normalized in ["csv", "tsv"]:
             df, parse_info = parse_csv_with_multiple_headers(file_content)
-        elif ext_normalized in ['xlsx', 'xls']:
+        elif ext_normalized in ["xlsx", "xls"]:
             df, parse_info = parse_excel(file_content)
         else:
             raise ValueError(f"Unsupported extension for Stage 1: {ext_normalized}")
-        
+
         rows_total = len(df)
-        logger.info(f"[PARSER] Parsed {rows_total} rows, {len(df.columns)} columns")
-        
-        # Header cleaning: normalizza nomi colonne
+        logger.info("[PARSER] Parsed %s rows, %s columns", rows_total, len(df.columns))
+
         original_columns = list(df.columns)
-        df.columns = [normalize_column_name(col) for col in df.columns]
-        
-        # Header mapping: usa rapidfuzz per mappare a colonne standard
-        logger.info(f"[PARSER] Original columns: {original_columns}")
-        logger.info(f"[PARSER] Using confidence threshold: {config.header_confidence_th}")
-        
-        header_mapping = map_headers(
-            original_columns,
-            confidence_threshold=config.header_confidence_th,
-            use_extended=True
-        )
-        
-        logger.info(f"[PARSER] Header mapping result: {header_mapping}")
-        
-        # Verifica se "Etichetta" è stata mappata
-        etichetta_mapped = False
-        for orig_col, std_col in header_mapping.items():
-            if 'etichetta' in orig_col.lower() or 'etichetta' in normalize_column_name(orig_col):
-                etichetta_mapped = True
-                logger.info(f"[PARSER] 'Etichetta' trovata e mappata: '{orig_col}' → '{std_col}'")
-                break
-        
-        if not etichetta_mapped:
-            logger.warning(
-                f"[PARSER] 'Etichetta' NON mappata! Colonne originali: {original_columns}, "
-                f"mapping: {header_mapping}, threshold: {config.header_confidence_th}"
-            )
-        
-        # Applica mapping (rinomina colonne)
-        if header_mapping:
-            # Inverti mapping: da {original: standard} a {standard: original}
-            # Ma dobbiamo mappare usando i nomi normalizzati
-            reverse_mapping = {}
-            for orig_col, std_col in header_mapping.items():
-                normalized_orig = normalize_column_name(orig_col)
-                if normalized_orig in df.columns:
-                    reverse_mapping[normalized_orig] = std_col
-            
-            # Rinomina colonne
-            df = df.rename(columns=reverse_mapping)
-            logger.info(f"[PARSER] Header mapping applied: {len(header_mapping)} columns mapped → {list(df.columns)}")
-        
-        # Calcola schema_score (prima della normalizzazione valori)
-        schema_score = calculate_schema_score(df)
-        
-        # Value normalization: normalizza valori per ogni riga
-        wines_data = []
-        filtered_empty_count = 0
-        normalization_errors = 0
-        
-        supplier_blacklist = {
-            'ceretto', 'winesider', 'enoclub', 'marzullo', 'toso',
-            'fabio oliveri', 'max sedda', 'ti mossi', 'moretto'
-        }
-        generic_blacklist = {
-            'producer', 'fornitore', 'supplier', 'cantina', 'wine', 'indice',
-            'bolle', 'bianchi', 'rossi', 'rosè', 'rose', 'passiti', '-', '--'
-        }
+        column_samples: Dict[str, List[str]] = {}
+        for column in original_columns:
+            samples: List[str] = []
+            for value in df[column]:
+                if pd.isna(value):
+                    continue
+                text = str(value).strip()
+                if not text:
+                    continue
+                samples.append(text)
+                if len(samples) == 5:
+                    break
+            column_samples[column] = samples
 
-        filtered_blacklist_count = 0
+        wine_rows, header_mapping = parse_dataframe(df, config, file_name)
 
-        for index, row in df.iterrows():
-            try:
-                # Converte riga in dict
-                # IMPORTANTE: Include anche colonne non mappate (come "Indice") per estrazione dati utili
-                row_dict = row.to_dict()
-                
-                # Aggiungi anche colonne originali non mappate (per estrazione tipo da "Indice")
-                # Le colonne originali sono ancora nel dataframe con nomi normalizzati
-                # Cerca colonne originali che non sono state mappate (come "Indice", "ID")
-                for orig_col in original_columns:
-                    normalized_orig = normalize_column_name(orig_col)
-                    # Se la colonna normalizzata esiste nel dataframe ma non è stata mappata,
-                    # aggiungila con il nome originale (per estrazione dati utili)
-                    if normalized_orig in df.columns:
-                        # Se non è stata mappata (non è nel row_dict con nome standard),
-                        # aggiungila con il nome originale
-                        if orig_col not in row_dict and normalized_orig not in row_dict:
-                            # Usa il valore dalla colonna normalizzata nel dataframe
-                            if normalized_orig in row.index:
-                                row_dict[orig_col] = row[normalized_orig]
-                
-                # Normalizza valori (ora include anche colonne non mappate come "Indice")
-                normalized_row = normalize_values(row_dict)
-                
-                # Filtra SOLO righe chiaramente vuote o placeholder
-                # Stage 1 deve pulire ma NON togliere vini validi - lascia che Stage 3 gestisca righe incomplete
-                name = normalized_row.get('name', '').strip()
-                
-                # Name invalido: vuoto o placeholder
-                is_invalid_name = (
-                    not name or 
-                    len(name) == 0 or 
-                    name.lower() in ['nan', 'none', 'null', 'n/a', 'na', 'undefined', '', ' ']
-                )
-                
-                # Verifica se la riga ha dati significativi (potrebbe essere un vino anche senza name valido)
-                has_meaningful_data = (
-                    normalized_row.get('winery') or 
-                    normalized_row.get('qty', 0) > 0 or 
-                    normalized_row.get('price') is not None or
-                    normalized_row.get('vintage') is not None
-                )
-                
-                # Riga completamente vuota: name invalido E nessun dato significativo
-                is_completely_empty = is_invalid_name and not has_meaningful_data
-                
-                skip_reason = None
-                name_lower = name.lower()
-                winery_lower = (normalized_row.get('winery') or '').strip().lower()
-                quantity_val = normalized_row.get('qty', 0) or 0
-                price_val = normalized_row.get('price')
-                supplier_lower = (normalized_row.get('supplier') or '').strip().lower()
-
-                # Heuristic blacklist
-                if name_lower in generic_blacklist:
-                    skip_reason = f"name_blacklist='{name_lower}'"
-                elif name_lower in supplier_blacklist and (not supplier_lower or supplier_lower == name_lower):
-                    skip_reason = f"name_is_supplier='{name_lower}'"
-                elif name_lower == winery_lower and name_lower in supplier_blacklist:
-                    skip_reason = f"name_equals_supplier='{name_lower}'"
-                elif name_lower == winery_lower and quantity_val == 0 and (price_val is None or price_val == 0):
-                    skip_reason = "name_equals_winery_and_zero_data"
-
-                if not skip_reason and is_completely_empty:
-                    skip_reason = "completely_empty"
-
-                if not skip_reason:
-                    normalized_row['source_stage'] = 'stage1'
-                    wines_data.append(normalized_row)
-                else:
-                    if skip_reason == "completely_empty":
-                        filtered_empty_count += 1
-                    else:
-                        filtered_blacklist_count += 1
-                        logger.debug(
-                            f"[PARSER] Riga {index} scartata per {skip_reason} "
-                            f"(winery='{normalized_row.get('winery', '')[:30]}', qty={quantity_val}, price={price_val})"
-                        )
-            except Exception as e:
-                normalization_errors += 1
-                logger.warning(f"[PARSER] Error normalizing row {index}: {e}")
+        normalized_rows: List[WineRow] = []
+        filtered_empty = 0
+        for wine_row in wine_rows:
+            normalized = normalize_wine_row(wine_row, config)
+            normalized = resolve_supplier_producer(normalized, config)
+            if _is_row_empty(normalized):
+                filtered_empty += 1
                 continue
-        
-        logger.info(
-            f"[PARSER] Stage 1 normalizzazione completata: {len(wines_data)} vini estratti da {rows_total} righe "
-            f"(scartati: {filtered_empty_count} vuote, {filtered_blacklist_count} blacklist, {normalization_errors} errori normalizzazione)"
-        )
-        
-        # Validation: valida con Pydantic
-        valid_wines, rejected_wines, validation_stats = validate_batch(wines_data)
-        
-        # Converti WineItemModel in dict per compatibilità
+            normalized_rows.append(normalized)
+
+        normalized_rows = deduplicate(normalized_rows)
+        payload_rows = [wine_row_to_payload(r) for r in normalized_rows]
+
+        valid_wines, rejected_wines, validation_stats = validate_batch(payload_rows)
         wines_data_valid = [wine_model_to_dict(wine) for wine in valid_wines]
-        
-        rows_valid = validation_stats['rows_valid']
-        rows_rejected = validation_stats['rows_rejected']
-        
-        # Calcola valid_rows
-        valid_rows = rows_valid / rows_total if rows_total > 0 else 0.0
-        
-        # Calcola metriche
+
+        rows_valid = validation_stats["rows_valid"]
+        rows_rejected = validation_stats["rows_rejected"]
+        valid_rows_ratio = rows_valid / rows_total if rows_total else 0.0
+
+        schema_score = calculate_schema_score(header_mapping)
         elapsed_ms = (time.time() - start_time) * 1000
-        
-        metrics = {
-            'schema_score': schema_score,
-            'valid_rows': valid_rows,
-            'rows_total': rows_total,
-            'rows_valid': rows_valid,
-            'rows_rejected': rows_rejected,
-            'rejection_reasons': validation_stats['rejection_reasons'],
-            'elapsed_ms': elapsed_ms,
-            'parse_info': parse_info,
-            'header_mapping': header_mapping,
-            'rows_filtered_blacklist': filtered_blacklist_count
+
+        mapped_fields = {
+            info["field"]
+            for info in header_mapping.values()
+            if info.get("field")
         }
-        
-        # Decisione: se supera soglie → SALVA, altrimenti → Stage 2
-        if schema_score >= config.schema_score_th and valid_rows >= config.min_valid_rows:
-            decision = 'save'
-            logger.info(
-                f"[PARSER] Stage 1 SUCCESS: schema_score={schema_score:.2f} >= {config.schema_score_th}, "
-                f"valid_rows={valid_rows:.2f} >= {config.min_valid_rows} → SALVA"
-            )
+        missing_required = [field for field in REQUIRED_COLUMNS if field not in mapped_fields]
+        unmapped_columns = [
+            column for column, info in header_mapping.items() if info.get("field") is None
+        ]
+
+        metrics: Dict[str, Any] = {
+            "schema_score": schema_score,
+            "valid_rows": valid_rows_ratio,
+            "rows_total": rows_total,
+            "rows_valid": rows_valid,
+            "rows_rejected": rows_rejected,
+            "rejection_reasons": validation_stats["rejection_reasons"],
+            "elapsed_ms": elapsed_ms,
+            "parse_info": parse_info,
+            "header_mapping": header_mapping,
+            "rows_after_filter": len(payload_rows),
+            "rows_filtered_empty": filtered_empty,
+            "missing_required_fields": missing_required,
+            "unmapped_columns": unmapped_columns,
+            "original_columns": original_columns,
+            "column_samples": column_samples,
+        }
+
+        if schema_score >= config.schema_score_th and valid_rows_ratio >= config.min_valid_rows:
+            decision = "save"
         else:
-            decision = 'escalate_to_stage2'
-            logger.info(
-                f"[PARSER] Stage 1 INSUFFICIENT: schema_score={schema_score:.2f} < {config.schema_score_th} "
-                f"or valid_rows={valid_rows:.2f} < {config.min_valid_rows} → Stage 2"
-            )
-        
-        # Logging JSON strutturato
+            decision = "escalate_to_stage2"
+
         log_json(
-            level='info',
+            level="info",
             message=f"Stage 1 parse completed: decision={decision}",
             file_name=file_name,
             ext=ext_normalized,
-            stage='csv_parse',
+            stage="csv_parse",
             schema_score=schema_score,
-            valid_rows=valid_rows,
+            valid_rows=valid_rows_ratio,
             rows_total=rows_total,
             rows_valid=rows_valid,
             rows_rejected=rows_rejected,
             elapsed_ms=elapsed_ms,
-            decision=decision
+            decision=decision,
         )
-        
+
         return wines_data_valid, metrics, decision
-        
-    except Exception as e:
+
+    except Exception as exc:  # pragma: no cover - log branch
         elapsed_ms = (time.time() - start_time) * 1000
-        logger.error(f"[PARSER] Error in Stage 1: {e}", exc_info=True)
-        
-        # Log errore
+        logger.error("[PARSER] Error in Stage 1: %s", exc, exc_info=True)
         log_json(
-            level='error',
-            message=f"Stage 1 parse failed: {str(e)}",
+            level="error",
+            message=f"Stage 1 parse failed: {exc}",
             file_name=file_name,
-            ext=ext or 'unknown',
-            stage='csv_parse',
+            ext=ext or "unknown",
+            stage="csv_parse",
             elapsed_ms=elapsed_ms,
-            decision='error'
+            decision="error",
         )
-        
         raise
 

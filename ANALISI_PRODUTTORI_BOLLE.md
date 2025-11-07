@@ -116,3 +116,4 @@ Aggiungere logging per vedere:
 2. Verificare che "Etichetta" e "Cantina" vengano mappati correttamente
 3. Correggere la logica di estrazione nome se necessario
 
+

@@ -3,10 +3,21 @@ Normalization per Stage 1.
 
 Unifica funzioni di normalizzazione header, valori e classificazione.
 """
-import re
+from __future__ import annotations
+
 import logging
-from typing import Dict, List, Optional, Any
+import re
+import unicodedata
+from typing import Any, Dict, List, Optional
+
 from rapidfuzz import fuzz, process
+
+from copy import deepcopy
+
+from core.config import ProcessorConfig
+from core.logger_diff import log_field_override
+from ingest.types import FieldVal, WineRow
+from ingest.utils_confidence import can_override
 
 logger = logging.getLogger(__name__)
 
@@ -827,6 +838,107 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
         normalized['notes'] = normalize_string_field(row['notes'])
     
     return normalized
+
+
+def _clean_text_light(value: str) -> str:
+    return " ".join(value.strip().split())
+
+
+def _parse_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    match = re.search(r"-?\d+", str(value))
+    if match:
+        try:
+            return int(match.group(0))
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    text = text.replace("€", "").replace(" ", "")
+    text = text.replace(".", "").replace(",", ".")
+    match = re.search(r"-?\d+(\.\d+)?", text)
+    if match:
+        try:
+            return float(match.group(0))
+        except ValueError:
+            return None
+    return None
+
+
+def _clone_field(field: FieldVal) -> FieldVal:
+    return FieldVal(
+        value=field.value,
+        confidence=field.confidence,
+        source=field.source,
+        lineage=deepcopy(field.lineage),
+    )
+
+
+def normalize_wine_row(row: WineRow, cfg: ProcessorConfig) -> WineRow:
+    """Normalizzazione leggera (SAFE) che preserva valori originali."""
+
+    policy = (cfg.normalization_policy or "SAFE").upper()
+    delta = cfg.llm_strict_override_delta
+
+    qty_value = _parse_int(row.qty.value)
+    qty_before = _clone_field(row.qty)
+    if qty_value is not None and qty_value >= 0:
+        row.qty.value = qty_value
+        row.qty.confidence = max(row.qty.confidence, 0.9)
+        log_field_override("qty", qty_before, row.qty)
+
+    price_value = _parse_float(row.price.value)
+    price_before = _clone_field(row.price)
+    if price_value is not None and price_value >= 0:
+        row.price.value = price_value
+        row.price.confidence = max(row.price.confidence, 0.85)
+        log_field_override("price", price_before, row.price)
+
+    vintage_before = _clone_field(row.vintage)
+    vintage_value = normalize_vintage(row.vintage.value)
+    if vintage_value is not None:
+        row.vintage.value = vintage_value
+        row.vintage.confidence = max(row.vintage.confidence, 0.8)
+        log_field_override("vintage", vintage_before, row.vintage)
+
+    for field_name in ("name", "winery", "supplier", "description", "notes"):
+        field: FieldVal = getattr(row, field_name)
+        if isinstance(field.value, str):
+            cleaned = _clean_text_light(field.value)
+            if (
+                cleaned != field.value
+                and can_override(field, field.confidence, policy, delta)
+            ):
+                before = _clone_field(field)
+                field.value = cleaned
+                log_field_override(field_name, before, field)
+
+    if (row.type.value in (None, "")) and isinstance(row.name.value, str):
+        type_before = _clone_field(row.type)
+        inferred = classify_wine_type(row.name.value)
+        if inferred and inferred != "sconosciuto":
+            row.type.value = inferred
+            row.type.confidence = max(row.type.confidence, 0.7)
+            log_field_override("type", type_before, row.type)
+
+    return row
 
 
 def clean_wine_name(name: str) -> str:

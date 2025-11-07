@@ -4,7 +4,7 @@ Configurazione per gioia-processor usando pydantic-settings.
 Gestisce tutte le variabili d'ambiente e feature flags per la pipeline.
 """
 import os
-from typing import List
+from typing import List, Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
@@ -40,12 +40,37 @@ class ProcessorConfig(BaseSettings):
     ia_targeted_enabled: bool = Field(default=True, description="Abilita Stage 2 (IA mirata)")
     llm_fallback_enabled: bool = Field(default=True, description="Abilita Stage 3 (LLM mode)")
     ocr_enabled: bool = Field(default=True, description="Abilita Stage 4 (OCR)")
+    normalization_policy: Literal["SAFE", "AGGRESSIVE"] = Field(
+        default=os.getenv("NORMALIZATION_POLICY", "SAFE"),
+        description="Policy di normalizzazione valori"
+    )
     
     # Tentativi / soglie
     csv_max_attempts: int = Field(default=3, description="Max tentativi parsing CSV")
-    schema_score_th: float = Field(default=0.7, ge=0.0, le=1.0, description="Soglia schema_score per Stage 1")
-    min_valid_rows: float = Field(default=0.6, ge=0.0, le=1.0, description="Soglia valid_rows per Stage 1")
-    header_confidence_th: float = Field(default=0.55, ge=0.0, le=1.0, description="Confidence threshold per header mapping (più basso = più permissivo)")
+    schema_score_th: float = Field(
+        default=float(os.getenv("SCHEMA_SCORE_TH", "0.80")),
+        ge=0.0,
+        le=1.0,
+        description="Soglia schema_score per Stage 1"
+    )
+    min_valid_rows: float = Field(
+        default=float(os.getenv("MIN_VALID_ROWS", "0.70")),
+        ge=0.0,
+        le=1.0,
+        description="Soglia valid_rows per Stage 1"
+    )
+    header_confidence_th: float = Field(
+        default=float(os.getenv("HEADER_CONFIDENCE_TH", "0.72")),
+        ge=0.0,
+        le=1.0,
+        description="Soglia confidenza mapping header"
+    )
+    llm_strict_override_delta: float = Field(
+        default=float(os.getenv("LLM_STRICT_OVERRIDE_DELTA", "0.10")),
+        ge=0.0,
+        le=1.0,
+        description="Delta minimo per consentire override in modalità SAFE"
+    )
     
     # IA mirata (Stage 2)
     batch_size_ambiguous_rows: int = Field(default=20, ge=1, le=100, description="Batch size per righe ambigue")

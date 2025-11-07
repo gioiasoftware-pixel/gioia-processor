@@ -143,3 +143,4 @@ Il problema principale è che:
 
 **Soluzione**: Fixare Stage 0.5 per identificare tutti gli header e estrarre vini da tutte le sezioni, oppure fixare Stage 3 per processare tutto il file senza troncarlo.
 
+
