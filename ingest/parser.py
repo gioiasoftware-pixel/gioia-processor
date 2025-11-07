@@ -161,6 +161,9 @@ def parse_classic(
         
         # Value normalization: normalizza valori per ogni riga
         wines_data = []
+        filtered_empty_count = 0
+        normalization_errors = 0
+        
         for index, row in df.iterrows():
             try:
                 # Converte riga in dict
@@ -195,13 +198,20 @@ def parse_classic(
                 if not is_completely_empty:
                     wines_data.append(normalized_row)
                 else:
+                    filtered_empty_count += 1
                     logger.debug(
                         f"[PARSER] Riga {index} scartata: completamente vuota "
                         f"(name='{name[:30] if name else 'EMPTY'}', has_data={has_meaningful_data})"
                     )
             except Exception as e:
+                normalization_errors += 1
                 logger.warning(f"[PARSER] Error normalizing row {index}: {e}")
                 continue
+        
+        logger.info(
+            f"[PARSER] Stage 1 normalizzazione completata: {len(wines_data)} vini estratti da {rows_total} righe "
+            f"(scartati: {filtered_empty_count} righe vuote, {normalization_errors} errori normalizzazione)"
+        )
         
         # Validation: valida con Pydantic
         valid_wines, rejected_wines, validation_stats = validate_batch(wines_data)

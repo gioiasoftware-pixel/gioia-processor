@@ -706,6 +706,9 @@ async def extract_llm_mode(
         
         # 5. Normalizza valori
         normalized_wines = []
+        filtered_empty = 0
+        filtered_invalid_name = 0
+        
         for idx, wine in enumerate(deduplicated_wines):
             try:
                 logger.debug(f"[LLM_EXTRACT] Normalizzando vino {idx+1}/{len(deduplicated_wines)}: {wine.get('name', 'N/A')[:50]}")
@@ -732,15 +735,24 @@ async def extract_llm_mode(
                     normalized_wines.append(normalized)
                     logger.debug(f"[LLM_EXTRACT] Vino aggiunto a normalized_wines (totale: {len(normalized_wines)})")
                 else:
-                    logger.warning(
+                    if not is_valid_name:
+                        filtered_invalid_name += 1
+                    else:
+                        filtered_empty += 1
+                    logger.debug(
                         f"[LLM_EXTRACT] Vino scartato: name invalido o riga vuota "
-                        f"(name='{name[:30]}', has_other_data={has_other_data})"
+                        f"(name='{name[:30] if name else 'EMPTY'}', has_other_data={has_other_data}, "
+                        f"is_valid_name={is_valid_name})"
                     )
             except Exception as e:
                 logger.warning(f"[LLM_EXTRACT] Errore normalizzazione vino {idx+1}: {e}", exc_info=True)
                 continue
         
-        logger.info(f"[LLM_EXTRACT] Dopo normalizzazione: {len(normalized_wines)} vini validi")
+        logger.info(
+            f"[LLM_EXTRACT] Dopo normalizzazione: {len(normalized_wines)} vini validi "
+            f"(scartati: {filtered_invalid_name} name invalido, {filtered_empty} righe vuote, "
+            f"da {len(deduplicated_wines)} deduplicati)"
+        )
         
         # 6. Validazione finale con Pydantic
         if not normalized_wines:

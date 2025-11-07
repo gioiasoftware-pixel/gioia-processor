@@ -152,7 +152,8 @@ def identify_header_row(row: List[str], confidence_threshold: float = 0.60) -> O
                         best_score_weighted = weighted_score
                 
                 if best_match:
-                    field_name, _, score, priority = best_match
+                    # best_match è (field_name, score, priority) - 3 elementi
+                    field_name, score, priority = best_match
                     
                     # Gestisci conflitti: se field già mappato, usa quello con score pesato più alto
                     if field_name not in field_mapping:
