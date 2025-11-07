@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Campi database che dobbiamo identificare
 DATABASE_FIELDS = [
-    'name', 'winery', 'vintage', 'qty', 'price', 'type',
+    'name', 'winery', 'vintage', 'qty', 'price', 'min_quantity', 'type',
     'grape_variety', 'region', 'country', 'supplier', 'classification',
     'cost_price', 'alcohol_content', 'description', 'notes'
 ]

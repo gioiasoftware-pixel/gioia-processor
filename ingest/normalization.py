@@ -17,6 +17,7 @@ COLUMN_MAPPINGS = {
     'vintage': ['annata', 'year', 'yr', 'anno'],
     'qty': ['quantità', 'qta', 'pezzi', 'bottiglie', 'pz', 'q.ty'],
     'price': ['prezzo', '€/pz', 'costo', 'valore', 'price'],
+    'min_quantity': ['scorta minima', 'minimo', 'q minima', 'quantità minima', 'min qty', 'soglia minima', 'scorta min', 'stock minimo', 'minimun stock', 'minimum stock'],
     'type': ['tipologia', 'colore', 'categoria'],
 }
 
@@ -27,6 +28,7 @@ COLUMN_MAPPINGS_EXTENDED = {
     'vintage': ['annata', 'year', 'vintage', 'anno', 'anno produzione', 'vintage year', 'anno vendemmia', 'vendemmia', 'yr', 'vintage year', 'anno vinificazione', 'year vintage', 'vintage yr', 'anno prod', 'prod year', 'anno vino'],
     'winery': ['produttore', 'producer', 'winery', 'azienda', 'casa vinicola', 'marca', 'brand', 'cantina', 'fattoria', 'azienda vinicola', 'casa produttrice', 'casa', 'produttore vino', 'azienda produttrice', 'casa vinicola', 'marca vino', 'brand vino', 'cantina produttrice', 'fattoria vinicola'],
     'qty': ['quantità', 'quantity', 'qty', 'q.tà', 'pezzi', 'bottiglie', 'quantità in magazzino', 'scorta', 'qta_magazzino', 'qta magazzino', 'qta', 'disp', 'disponibilità', 'stock', 'q iniziale', 'q. iniziale', 'quantità iniziale', 'q iniz', 'q. iniz', 'q iniziale magazzino', 'quantità iniz', 'q iniziale stock', 'q iniz', 'q cantina', 'quantità disponibile', 'q disponibile', 'q disponibile magazzino', 'scorta disponibile', 'pezzi disponibili', 'bottiglie disponibili', 'quantità stock', 'q stock', 'disponibilità magazzino', 'q.ty', 'qty.', 'qty disponibile', 'quantità iniz', 'q iniz magazzino'],
+    'min_quantity': ['scorta minima', 'minimo', 'q minima', 'quantità minima', 'min qty', 'soglia minima', 'scorta min', 'stock minimo', 'minimun stock', 'minimum stock'],
     'price': ['prezzo', 'price', 'prezzo vendita', 'prezzo di vendita', 'prezzo al pubblico', 'prezzo pubblico', 'prezzo in carta', 'listino', 'prezzo listino', 'prezzo_unit_eur', 'prezzo unit eur', 'prezzo unitario', 'prezzo unit', 'eur', 'euro', 'valore', 'prezzo unitario eur', 'prezzo unitario euro', 'prezzo vendita eur', 'prezzo vendita euro', 'listino prezzo', 'prezzo listino eur', 'valore unitario', 'prezzo pz', 'prezzo pezzo', 'prezzo bottiglia', 'eur pz', 'euro pz', 'eur pezzo', 'euro pezzo', 'selling price', 'prezzo vendita'],
     'type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino', 'colore', 'tipologia', 'tipo prodotto', 'categoria prodotto', 'colore vino', 'tipologia vino', 'tipo vino prodotto'],
     # Nuovi campi aggiunti
@@ -484,6 +486,27 @@ def normalize_alcohol_content(value: Any) -> Optional[float]:
     return None
 
 
+def normalize_min_quantity(value: Any) -> Optional[int]:
+    """Normalizza scorta minima."""
+    if is_na(value) or value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            import math
+            if isinstance(value, float) and math.isnan(value):
+                return None
+            return max(0, int(value))
+        value_str = str(value).strip()
+        if not value_str:
+            return None
+        match = re.search(r'-?\d+', value_str)
+        if match:
+            return max(0, int(match.group()))
+    except Exception as exc:
+        logger.debug(f"[NORMALIZATION] normalize_min_quantity errore: {exc} (value={value})")
+    return None
+
+
 # Importa dizionario centralizzato termini problematici
 from ingest.wine_terms_dict import (
     ALL_PROBLEMATIC_TERMS,
@@ -569,7 +592,7 @@ def extract_wine_name_from_category_pattern(name_str: str, winery: Optional[str]
             )
             return wine_name, inferred_type
     
-    # ✅ NUOVO: Se il nome è solo una categoria (es. "Bolle", "Rosè"), correggilo
+    # ✅ NUOVO: Se il nome è solo una categoria (es. "Bolle"), correggilo
     if is_category_only(name_clean):
         # Usa dizionario centralizzato per inferire tipo vino
         inferred_type = infer_wine_type_from_category(name_clean)
@@ -747,6 +770,12 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
         normalized['price'] = normalize_price(row['price'])
     else:
         normalized['price'] = None
+
+    # Min quantity
+    if 'min_quantity' in row:
+        normalized['min_quantity'] = normalize_min_quantity(row['min_quantity'])
+    else:
+        normalized['min_quantity'] = None
     
     # Type (mappa fuzzy a enum)
     if 'type' in row:

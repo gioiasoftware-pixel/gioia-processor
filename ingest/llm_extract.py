@@ -233,6 +233,7 @@ Obiettivo:
     "vintage": int|null, 
     "qty": int>=0, 
     "price": float|null, 
+    "min_quantity": int|null,
     "type": string|null,
     "grape_variety": string|null,
     "region": string|null,
@@ -294,6 +295,7 @@ Regole CRITICHE per JSON valido:
 - "vintage" deve essere 1900–2099 oppure null (non stringa).
 - "qty" deve essere un intero (es. "12 bottiglie" → 12, "0" → 0).
 - "price" (prezzo vendita) in EUR: accetta virgola (es. 8,50 → 8.5). Se assente → null.
+- "min_quantity" (scorta minima) se presente registra come intero >= 0, altrimenti null.
 - "cost_price" (prezzo costo) in EUR: accetta virgola (es. 6,50 → 6.5). Se assente → null.
 - "alcohol_content" (gradazione alcolica) in %: accetta virgola (es. 14,5 → 14.5). Range 0-100. Se assente → null.
 - "type": una di [Rosso, Bianco, Rosato, Spumante, Altro]; se incerto → null.
