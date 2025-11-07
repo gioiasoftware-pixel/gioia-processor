@@ -198,18 +198,54 @@ def identify_header_row(row: List[str], confidence_threshold: float = 0.60) -> O
     return None
 
 
+def is_row_a_header(row: List[str], header_mapping: Dict[str, int]) -> bool:
+    """
+    Verifica se una riga è un header (per evitare di estrarre header multipli come vini).
+    
+    Args:
+        row: Lista di valori della riga
+        header_mapping: Dict {field_name: column_index} del header corrente
+    
+    Returns:
+        True se la riga sembra essere un header, False altrimenti
+    """
+    # Se la riga matcha lo stesso pattern del header, è probabilmente un header
+    potential_header_mapping = identify_header_row(row, confidence_threshold=0.60)
+    
+    if potential_header_mapping:
+        # Se ha mappato almeno 2 campi e sono gli stessi del header corrente, è un header
+        if len(potential_header_mapping) >= 2:
+            # Verifica se i campi mappati sono simili a quelli del header corrente
+            current_fields = set(header_mapping.keys())
+            potential_fields = set(potential_header_mapping.keys())
+            
+            # Se almeno 2 campi sono in comune, è probabilmente un header
+            common_fields = current_fields.intersection(potential_fields)
+            if len(common_fields) >= 2:
+                logger.debug(f"[HEADER_ID] Riga identificata come header (campi comuni: {common_fields})")
+                return True
+    
+    return False
+
+
 def extract_wines_from_rows(
     rows: List[List[str]],
     header_mapping: Dict[str, int],
-    start_row_idx: int = 0
+    start_row_idx: int = 0,
+    stop_at_next_header: bool = True
 ) -> List[Dict[str, Any]]:
     """
     Estrae vini dalle righe sotto un header identificato.
+    
+    Migliorato per:
+    1. Gestire righe con name vuoto ma altri dati validi (usa winery come fallback)
+    2. Evitare di estrarre header multipli come vini
     
     Args:
         rows: Lista di righe (ogni riga è lista di celle)
         header_mapping: Dict {field_name: column_index} dal header identificato
         start_row_idx: Indice riga da cui iniziare (dopo l'header)
+        stop_at_next_header: Se True, ferma estrazione quando trova un nuovo header
     
     Returns:
         Lista di dict con vini estratti
@@ -218,6 +254,11 @@ def extract_wines_from_rows(
     
     for row_idx in range(start_row_idx, len(rows)):
         row = rows[row_idx]
+        
+        # Verifica se questa riga è un header (per evitare di estrarre header multipli)
+        if stop_at_next_header and is_row_a_header(row, header_mapping):
+            logger.debug(f"[HEADER_ID] Trovato nuovo header alla riga {row_idx}, fermando estrazione sezione")
+            break
         
         # Crea dict vino usando header_mapping
         wine_dict = {}
@@ -238,13 +279,24 @@ def extract_wines_from_rows(
             try:
                 normalized = normalize_values(wine_dict)
                 
-                # Verifica che non sia completamente vuoto
+                # Gestione name vuoto: se name è vuoto ma ci sono altri dati validi, usa winery come fallback
                 name = normalized.get('name', '').strip() if normalized.get('name') else ''
+                winery = normalized.get('winery', '').strip() if normalized.get('winery') else ''
+                
+                # Se name è vuoto ma winery esiste, usa winery come name
+                if not name and winery:
+                    normalized['name'] = winery
+                    logger.debug(
+                        f"[HEADER_ID] Riga {row_idx}: name vuoto, usando winery '{winery}' come name"
+                    )
+                    name = winery
+                
+                # Verifica che non sia completamente vuoto
                 has_meaningful_data = (
                     name or
-                    normalized.get('winery') or
                     normalized.get('qty', 0) > 0 or
-                    normalized.get('price') is not None
+                    normalized.get('price') is not None or
+                    normalized.get('vintage') is not None
                 )
                 
                 if has_meaningful_data:
@@ -253,6 +305,11 @@ def extract_wines_from_rows(
                         f"[HEADER_ID] Vino estratto riga {row_idx}: "
                         f"name={normalized.get('name', 'N/A')[:30]}, "
                         f"qty={normalized.get('qty', 0)}"
+                    )
+                else:
+                    logger.debug(
+                        f"[HEADER_ID] Riga {row_idx} scartata: nessun dato significativo "
+                        f"(name='{name[:30] if name else 'EMPTY'}', winery='{winery[:30] if winery else 'EMPTY'}')"
                     )
             except Exception as e:
                 logger.warning(f"[HEADER_ID] Errore normalizzazione riga {row_idx}: {e}")
@@ -343,7 +400,8 @@ def identify_headers_and_extract(
                 wines_from_section = extract_wines_from_rows(
                     rows,
                     header_mapping,
-                    start_row_idx=i + 1
+                    start_row_idx=i + 1,
+                    stop_at_next_header=True  # Ferma quando trova nuovo header
                 )
                 
                 all_wines.extend(wines_from_section)
