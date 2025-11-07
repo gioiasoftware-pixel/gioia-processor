@@ -13,14 +13,30 @@ import os
 from core.config import get_config
 from core.logger import log_json
 
+from __future__ import annotations
+
+"""Stage 2: disambiguazione header con LLM leggero."""
+
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import openai
+
+from core.config import get_config
+from core.diagnostics_state import increment
+from core.logger import log_json
+
 logger = logging.getLogger(__name__)
 
-# Inizializza client OpenAI
+PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "llm_targeted_header.md"
+_PROMPT_CACHE: Optional[str] = None
 _openai_client = None
 
 
 def get_openai_client():
-    """Ottiene client OpenAI (singleton)."""
     global _openai_client
     if _openai_client is None:
         config = get_config()
@@ -29,6 +45,142 @@ def get_openai_client():
             raise ValueError("OPENAI_API_KEY non configurato")
         _openai_client = openai.OpenAI(api_key=api_key)
     return _openai_client
+
+
+def _load_prompt_template() -> str:
+    global _PROMPT_CACHE
+    if _PROMPT_CACHE is None:
+        if not PROMPT_PATH.exists():
+            raise FileNotFoundError(f"Prompt Stage 2 non trovato: {PROMPT_PATH}")
+        _PROMPT_CACHE = PROMPT_PATH.read_text(encoding="utf-8")
+    return _PROMPT_CACHE
+
+
+def _format_prompt(columns: List[str], samples: Dict[str, List[str]]) -> str:
+    template = _load_prompt_template()
+    payload_samples = {column: samples.get(column, [])[:5] for column in columns}
+    return template.format(
+        columns=json.dumps(columns, ensure_ascii=False),
+        samples_by_column=json.dumps(payload_samples, ensure_ascii=False),
+    )
+
+
+async def llm_header_disambiguation(
+    columns: List[str], samples: Dict[str, List[str]]
+) -> List[Dict[str, Any]]:
+    if not columns:
+        return []
+
+    config = get_config()
+    client = get_openai_client()
+    prompt = _format_prompt(columns, samples)
+
+    response = client.chat.completions.create(
+        model=config.llm_model_targeted,
+        messages=[
+            {
+                "role": "system",
+                "content": "Sei un assistente che abbina nomi di colonne a campi inventario. Rispondi solo con JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+        max_tokens=config.max_llm_tokens,
+    )
+
+    result_text = response.choices[0].message.content.strip()
+    if result_text.startswith("```"):
+        result_text = result_text.split("```")[1]
+        if result_text.startswith("json"):
+            result_text = result_text[4:]
+        result_text = result_text.strip()
+
+    data = json.loads(result_text)
+    mappings = data.get("mappings", [])
+    if not isinstance(mappings, list):
+        return []
+
+    return mappings
+
+
+async def apply_targeted_ai(
+    wines_data: List[Dict[str, Any]],
+    original_columns: List[str],
+    header_mapping: Dict[str, Dict[str, Any]],
+    column_samples: Dict[str, List[str]],
+    schema_score: float,
+    valid_rows: float,
+    file_name: str,
+    ext: str,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
+    start_time = time.time()
+    config = get_config()
+
+    if not config.ia_targeted_enabled:
+        logger.info("[LLM_TARGETED] Stage 2 disabilitato, passa a Stage 3")
+        return wines_data, {}, "escalate_to_stage3"
+
+    try:
+        uncertain_columns: List[str] = []
+        for column in original_columns:
+            info = header_mapping.get(column, {})
+            score = float(info.get("score", 0.0))
+            if info.get("field") is None or score < config.header_confidence_th:
+                uncertain_columns.append(column)
+
+        increment("stage2.calls")
+
+        if not uncertain_columns:
+            metrics = {
+                "elapsed_ms": (time.time() - start_time) * 1000,
+                "checked_columns": [],
+                "mappings": [],
+                "schema_score": schema_score,
+                "valid_rows": valid_rows,
+            }
+            return wines_data, metrics, "escalate_to_stage3"
+
+        mappings = await llm_header_disambiguation(uncertain_columns, column_samples)
+        increment("stage2.header_requests", len(uncertain_columns))
+        increment("stage2.header_mappings", sum(1 for m in mappings if m.get("field")))
+
+        elapsed_ms = (time.time() - start_time) * 1000
+        metrics = {
+            "elapsed_ms": elapsed_ms,
+            "checked_columns": uncertain_columns,
+            "mappings": mappings,
+            "schema_score": schema_score,
+            "valid_rows": valid_rows,
+        }
+
+        log_json(
+            level="info",
+            message="Stage 2 header disambiguation completed",
+            file_name=file_name,
+            ext=ext,
+            stage="ia_targeted",
+            checked_columns=uncertain_columns,
+            mappings=mappings,
+            schema_score=schema_score,
+            valid_rows=valid_rows,
+            elapsed_ms=elapsed_ms,
+        )
+
+        return wines_data, metrics, "escalate_to_stage3"
+
+    except Exception as exc:
+        elapsed_ms = (time.time() - start_time) * 1000
+        logger.error("[LLM_TARGETED] Stage 2 failed: %s", exc, exc_info=True)
+        log_json(
+            level="error",
+            message=f"Stage 2 failed: {exc}",
+            file_name=file_name,
+            ext=ext,
+            stage="ia_targeted",
+            elapsed_ms=elapsed_ms,
+            decision="error",
+        )
+        return wines_data, {"error": str(exc)}, "escalate_to_stage3"
 
 
 async def disambiguate_headers(
@@ -261,174 +413,4 @@ Output SOLO JSON (nessun testo extra).
     except Exception as e:
         logger.error(f"[LLM_TARGETED] Errore correzione valori: {e}", exc_info=True)
         return batch_rows
-
-
-"""Stage 2: disambiguazione header con LLM leggero."""
-
-from __future__ import annotations
-
-import json
-import logging
-import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-import openai
-
-from core.config import get_config
-from core.diagnostics_state import increment
-from core.logger import log_json
-
-logger = logging.getLogger(__name__)
-
-PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "llm_targeted_header.md"
-_PROMPT_CACHE: Optional[str] = None
-_openai_client = None
-
-
-def get_openai_client():
-    global _openai_client
-    if _openai_client is None:
-        config = get_config()
-        api_key = config.openai_api_key
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY non configurato")
-        _openai_client = openai.OpenAI(api_key=api_key)
-    return _openai_client
-
-
-def _load_prompt_template() -> str:
-    global _PROMPT_CACHE
-    if _PROMPT_CACHE is None:
-        if not PROMPT_PATH.exists():
-            raise FileNotFoundError(f"Prompt Stage 2 non trovato: {PROMPT_PATH}")
-        _PROMPT_CACHE = PROMPT_PATH.read_text(encoding="utf-8")
-    return _PROMPT_CACHE
-
-
-def _format_prompt(columns: List[str], samples: Dict[str, List[str]]) -> str:
-    template = _load_prompt_template()
-    payload_samples = {column: samples.get(column, [])[:5] for column in columns}
-    return template.format(
-        columns=json.dumps(columns, ensure_ascii=False),
-        samples_by_column=json.dumps(payload_samples, ensure_ascii=False),
-    )
-
-
-async def llm_header_disambiguation(
-    columns: List[str], samples: Dict[str, List[str]]
-) -> List[Dict[str, Any]]:
-    if not columns:
-        return []
-
-    config = get_config()
-    client = get_openai_client()
-    prompt = _format_prompt(columns, samples)
-
-    response = client.chat.completions.create(
-        model=config.llm_model_targeted,
-        messages=[
-            {
-                "role": "system",
-                "content": "Sei un assistente che abbina nomi di colonne a campi inventario. Rispondi solo con JSON.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.0,
-        max_tokens=config.max_llm_tokens,
-    )
-
-    result_text = response.choices[0].message.content.strip()
-    if result_text.startswith("```"):
-        result_text = result_text.split("```")[1]
-        if result_text.startswith("json"):
-            result_text = result_text[4:]
-        result_text = result_text.strip()
-
-    data = json.loads(result_text)
-    mappings = data.get("mappings", [])
-    if not isinstance(mappings, list):
-        return []
-
-    return mappings
-
-
-async def apply_targeted_ai(
-    wines_data: List[Dict[str, Any]],
-    original_columns: List[str],
-    header_mapping: Dict[str, Dict[str, Any]],
-    column_samples: Dict[str, List[str]],
-    schema_score: float,
-    valid_rows: float,
-    file_name: str,
-    ext: str,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
-    start_time = time.time()
-    config = get_config()
-
-    if not config.ia_targeted_enabled:
-        logger.info("[LLM_TARGETED] Stage 2 disabilitato, passa a Stage 3")
-        return wines_data, {}, "escalate_to_stage3"
-
-    try:
-        uncertain_columns: List[str] = []
-        for column in original_columns:
-            info = header_mapping.get(column, {})
-            score = float(info.get("score", 0.0))
-            if info.get("field") is None or score < config.header_confidence_th:
-                uncertain_columns.append(column)
-
-        increment("stage2.calls")
-
-        if not uncertain_columns:
-            metrics = {
-                "elapsed_ms": (time.time() - start_time) * 1000,
-                "checked_columns": [],
-                "mappings": [],
-                "schema_score": schema_score,
-                "valid_rows": valid_rows,
-            }
-            return wines_data, metrics, "escalate_to_stage3"
-
-        mappings = await llm_header_disambiguation(uncertain_columns, column_samples)
-        increment("stage2.header_requests", len(uncertain_columns))
-        increment("stage2.header_mappings", sum(1 for m in mappings if m.get("field")))
-
-        elapsed_ms = (time.time() - start_time) * 1000
-        metrics = {
-            "elapsed_ms": elapsed_ms,
-            "checked_columns": uncertain_columns,
-            "mappings": mappings,
-            "schema_score": schema_score,
-            "valid_rows": valid_rows,
-        }
-
-        log_json(
-            level="info",
-            message="Stage 2 header disambiguation completed",
-            file_name=file_name,
-            ext=ext,
-            stage="ia_targeted",
-            checked_columns=uncertain_columns,
-            mappings=mappings,
-            schema_score=schema_score,
-            valid_rows=valid_rows,
-            elapsed_ms=elapsed_ms,
-        )
-
-        return wines_data, metrics, "escalate_to_stage3"
-
-    except Exception as exc:
-        elapsed_ms = (time.time() - start_time) * 1000
-        logger.error("[LLM_TARGETED] Stage 2 failed: %s", exc, exc_info=True)
-        log_json(
-            level="error",
-            message=f"Stage 2 failed: {exc}",
-            file_name=file_name,
-            ext=ext,
-            stage="ia_targeted",
-            elapsed_ms=elapsed_ms,
-            decision="error",
-        )
-        return wines_data, {"error": str(exc)}, "escalate_to_stage3"
 
