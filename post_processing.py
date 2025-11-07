@@ -451,7 +451,8 @@ async def normalize_saved_inventory(
         "country_inferred": 0,
         "values_normalized": 0,
         "llm_validation_retries": 0,
-        "llm_corrections_applied": 0
+        "llm_corrections_applied": 0,
+        "duplicates_removed": 0
     }
     
     try:
@@ -939,6 +940,61 @@ async def normalize_saved_inventory(
                 f"[POST_PROCESSING] Job {job_id}: Validazione LLM completata - "
                 f"{stats['llm_corrections_applied']} correzioni applicate in {llm_retry_count} retry"
             )
+        
+        # ✅ DEDUPLICAZIONE: Rimuovi vini completamente identici (tutti i campi uguali)
+        # Leggi tutti i vini dopo tutte le normalizzazioni
+        result = await session.execute(query, {"user_id": user_id})
+        wines_final = result.fetchall()
+        
+        if wines_final:
+            # Crea dict per tracciare duplicati completi
+            seen_wines = {}
+            duplicate_ids = []
+            
+            for wine in wines_final:
+                # Crea chiave univoca basata su TUTTI i campi rilevanti
+                wine_key = (
+                    wine.name or '',
+                    wine.producer or '' if hasattr(wine, 'producer') else '',
+                    wine.vintage if hasattr(wine, 'vintage') and wine.vintage else None,
+                    wine.quantity if hasattr(wine, 'quantity') else 0,
+                    wine.selling_price if hasattr(wine, 'selling_price') and wine.selling_price else None,
+                    wine.region or '' if hasattr(wine, 'region') else '',
+                    wine.country or '' if hasattr(wine, 'country') else '',
+                    wine.wine_type or '' if hasattr(wine, 'wine_type') else '',
+                    wine.classification or '' if hasattr(wine, 'classification') else ''
+                )
+                
+                if wine_key in seen_wines:
+                    # Duplicato completo trovato - marca per eliminazione
+                    duplicate_ids.append(wine.id)
+                    logger.debug(
+                        f"[POST_PROCESSING] Job {job_id}: Vino {wine.id} è duplicato completo di {seen_wines[wine_key]} "
+                        f"(name='{wine.name}', producer='{wine.producer if hasattr(wine, 'producer') else 'N/A'}')"
+                    )
+                else:
+                    # Primo vino con questa combinazione - mantieni
+                    seen_wines[wine_key] = wine.id
+            
+            # Rimuovi duplicati completi dal database
+            if duplicate_ids:
+                placeholders = ','.join([f':id_{i}' for i in range(len(duplicate_ids))])
+                delete_query = sql_text(f"""
+                    DELETE FROM {table_name}
+                    WHERE id IN ({placeholders}) AND user_id = :user_id
+                """)
+                params = {f'id_{i}': wine_id for i, wine_id in enumerate(duplicate_ids)}
+                params['user_id'] = user_id
+                await session.execute(delete_query, params)
+                await session.commit()
+                
+                stats["duplicates_removed"] = len(duplicate_ids)
+                logger.info(
+                    f"[POST_PROCESSING] Job {job_id}: Rimossi {len(duplicate_ids)} vini duplicati completi "
+                    f"(tutti i campi identici)"
+                )
+            else:
+                stats["duplicates_removed"] = 0
         
         return stats
         

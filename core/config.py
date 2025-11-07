@@ -33,6 +33,9 @@ class ProcessorConfig(BaseSettings):
     openai_api_key: str = Field(default="", description="API key OpenAI")
     openai_model: str = Field(default="gpt-4o-mini", description="Modello OpenAI default")
     
+    # Telegram Bot (per invio messaggi diretti agli utenti)
+    telegram_bot_token: str = Field(default="", description="Token bot Telegram per invio messaggi")
+    
     # Feature flags
     ia_targeted_enabled: bool = Field(default=True, description="Abilita Stage 2 (IA mirata)")
     llm_fallback_enabled: bool = Field(default=True, description="Abilita Stage 3 (LLM mode)")

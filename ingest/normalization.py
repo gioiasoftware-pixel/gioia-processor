@@ -566,9 +566,19 @@ def normalize_values(row: Dict[str, Any]) -> Dict[str, Any]:
         normalized['name'] = ""
     
     # Winery (trim, opzionale)
+    # Filtra valori che sono solo numeri (probabilmente ID invece di nome producer)
     if 'winery' in row:
         winery = row['winery']
-        normalized['winery'] = normalize_string_field(winery)
+        winery_normalized = normalize_string_field(winery)
+        # Se è solo un numero, scarta (probabilmente è un ID, non un nome)
+        if winery_normalized and winery_normalized.strip().isdigit():
+            logger.debug(
+                f"[NORMALIZATION] Winery scartato (solo numero): '{winery_normalized}' "
+                f"- probabilmente è un ID, non un nome producer"
+            )
+            normalized['winery'] = None
+        else:
+            normalized['winery'] = winery_normalized
     
     # Vintage (regex 19xx|20xx → int, fuori range = null)
     if 'vintage' in row:

@@ -353,8 +353,50 @@ async def process_inventory_background(
                             logger.info(
                                 f"[POST_PROCESSING] Job {job_id}: Normalizzazione completata - "
                                 f"{stats['normalized_count']}/{stats['total_wines']} vini normalizzati, "
-                                f"{stats.get('llm_corrections_applied', 0)} correzioni LLM applicate"
+                                f"{stats.get('llm_corrections_applied', 0)} correzioni LLM applicate, "
+                                f"{stats.get('duplicates_removed', 0)} duplicati rimossi"
                             )
+                            
+                            # Notifica utente direttamente su Telegram se ci sono duplicati rimossi
+                            if stats.get('duplicates_removed', 0) > 0:
+                                try:
+                                    from telegram_notifier import send_telegram_message
+                                    
+                                    duplicates_count = stats['duplicates_removed']
+                                    total_before = stats['total_wines']
+                                    total_after = total_before - duplicates_count
+                                    
+                                    message = (
+                                        f"🔍 **Pulizia inventario completata**\n\n"
+                                        f"✅ **{duplicates_count} vini duplicati** rimossi\n"
+                                        f"📊 **Inventario aggiornato:**\n"
+                                        f"• Prima: {total_before} vini\n"
+                                        f"• Dopo: {total_after} vini\n\n"
+                                        f"💡 I duplicati erano vini con **tutti i campi identici** (nome, produttore, annata, quantità, prezzo, regione, paese, tipo, classificazione).\n\n"
+                                        f"🏢 **{business_name}** inventario ottimizzato!"
+                                    )
+                                    
+                                    success = await send_telegram_message(
+                                        telegram_id=telegram_id,
+                                        message=message,
+                                        parse_mode="Markdown"
+                                    )
+                                    
+                                    if success:
+                                        logger.info(
+                                            f"[POST_PROCESSING] Job {job_id}: Messaggio Telegram inviato a {telegram_id} "
+                                            f"per {duplicates_count} duplicati rimossi"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"[POST_PROCESSING] Job {job_id}: Errore invio messaggio Telegram "
+                                            f"per duplicati rimossi"
+                                        )
+                                except Exception as notif_error:
+                                    logger.warning(
+                                        f"[POST_PROCESSING] Errore invio messaggio Telegram per duplicati: {notif_error}",
+                                        exc_info=True
+                                    )
                     except Exception as post_error:
                         # Non bloccare il flusso principale se post-processing fallisce
                         logger.warning(
