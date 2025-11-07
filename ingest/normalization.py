@@ -31,8 +31,8 @@ COLUMN_MAPPINGS_EXTENDED = {
     'type': ['tipo', 'type', 'wine_type', 'categoria', 'tipo vino', 'categoria vino', 'colore', 'tipologia', 'tipo prodotto', 'categoria prodotto', 'colore vino', 'tipologia vino', 'tipo vino prodotto'],
     # Nuovi campi aggiunti
     'grape_variety': ['uvaggio', 'grape variety', 'grape', 'varietà', 'varietà uve', 'uve', 'uvaggi', 'vitigno', 'vitigni', 'grape variety', 'grape_variety', 'varietà uva', 'tipologia uve', 'uvaggio vino'],
-    'region': ['regione', 'region', 'area', 'zona', 'territorio', 'terroir', 'regione produzione', 'zona produzione', 'area produzione'],
-    'country': ['nazione', 'country', 'paese', 'nazione produzione', 'paese origine', 'origine', 'provenienza', 'nazione origine'],
+    'region': ['regione', 'region', 'area', 'zona', 'territorio', 'terroir', 'regione produzione', 'zona produzione', 'area produzione', 'comune', 'municipio', 'località'],
+    'country': ['nazione', 'country', 'paese', 'nazione produzione', 'paese origine', 'origine', 'provenienza', 'nazione origine', 'nazionalità', 'nazionalita'],
     'supplier': ['fornitore', 'supplier', 'fornitore vino', 'importatore', 'distributore', 'fornitura', 'supplier name', 'fornitore nome', 'rappresentato', 'rappresentati', 'rappresentante', 'rappresentanti', 'rappresentanza', 'rappresentato da', 'rappresentati da', 'rappresentato per', 'rappresentati per', 'rappresentato da azienda', 'rappresentati da azienda', 'rappresentato da società', 'rappresentati da società', 'rappresentato da ditta', 'rappresentati da ditta', 'rappresentato da importatore', 'rappresentati da importatore', 'rappresentato da distributore', 'rappresentati da distributore', 'rappresentato da fornitore', 'rappresentati da fornitore', 'rappresentato da casa', 'rappresentati da casa', 'rappresentato da marca', 'rappresentati da marca', 'rappresentato da brand', 'rappresentati da brand', 'rappresentato da produttore', 'rappresentati da produttore', 'rappresentato da cantina', 'rappresentati da cantina'],
     'classification': ['denominazione', 'classification', 'classificazione', 'docg', 'doc', 'igt', 'vdt', 'igp', 'aoc', 'aop', 'vqa', 'denominazione origine', 'denominazione di origine', 'do', 'dop', 'igp', 'igt', 'vdt', 'vino da tavola'],
     'cost_price': ['costo', 'cost', 'costo unitario', 'costo fornitore', 'prezzo fornitore', 'costo acquisto', 'prezzo acquisto', 'costo pz', 'costo pezzo', 'costo bottiglia', 'cost price', 'prezzo costo', 'costo unit', 'costo unitario eur', 'costo unitario euro'],
@@ -96,6 +96,9 @@ def map_headers(
             target_to_standard[normalized_variant] = standard_name
     
     # Mappa ogni colonna originale
+    # Priorità: "Q cantina" ha priorità su "Q iniziale" per qty
+    qty_priority_columns = ['q cantina', 'q. cantina', 'quantità cantina', 'q disponibile', 'q stock']
+    
     for orig_col in original_columns:
         normalized_col = normalize_column_name(orig_col)
         
@@ -112,7 +115,29 @@ def map_headers(
                 matched_variant, score, _ = result
                 standard_name = target_to_standard[matched_variant]
                 
-                # Evita conflitti: se standard già mappato, salta
+                # Gestione conflitto per qty: preferisci "Q cantina" su "Q iniziale"
+                if standard_name == 'qty' and standard_name in mapped_standard_names:
+                    # Se qty è già mappato, verifica se questa colonna ha priorità
+                    current_mapped_col = next((k for k, v in rename_mapping.items() if v == 'qty'), None)
+                    if current_mapped_col:
+                        current_normalized = normalize_column_name(current_mapped_col)
+                        # Se la colonna corrente ha priorità, sostituisci
+                        if any(priority in normalized_col for priority in qty_priority_columns):
+                            if not any(priority in current_normalized for priority in qty_priority_columns):
+                                # Rimuovi mapping precedente e usa quello nuovo
+                                del rename_mapping[current_mapped_col]
+                                logger.info(
+                                    f"[NORMALIZATION] Sostituito mapping qty: '{current_mapped_col}' -> '{orig_col}' "
+                                    f"(priorità 'Q cantina' su 'Q iniziale')"
+                                )
+                            else:
+                                # Entrambi hanno priorità o nessuno, mantieni il primo
+                                continue
+                        else:
+                            # La colonna corrente non ha priorità, mantieni quella esistente
+                            continue
+                
+                # Evita conflitti: se standard già mappato (e non è qty con priorità), salta
                 if standard_name not in mapped_standard_names:
                     rename_mapping[orig_col] = standard_name
                     mapped_standard_names.add(standard_name)
