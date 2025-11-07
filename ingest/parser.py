@@ -242,6 +242,7 @@ def parse_classic(
                     skip_reason = "completely_empty"
 
                 if not skip_reason:
+                    normalized_row['source_stage'] = 'stage1'
                     wines_data.append(normalized_row)
                 else:
                     if skip_reason == "completely_empty":

@@ -279,6 +279,7 @@ def extract_wines_from_rows(
             # Normalizza valori
             try:
                 normalized = normalize_values(wine_dict)
+                normalized['source_stage'] = 'stage0_5'
                 
                 # Gestione name vuoto: se name è vuoto ma ci sono altri dati validi, usa winery come fallback
                 name = normalized.get('name', '').strip() if normalized.get('name') else ''

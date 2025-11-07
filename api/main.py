@@ -16,7 +16,7 @@ from core.config import get_config, validate_config
 from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables, AsyncSessionLocal
 from core.logger import setup_colored_logging
 from api.routers import ingest, snapshot
-from api.routers import movements
+from api.routers import movements, diagnostics
 from ingest.learned_terms_manager import load_learned_terms_set, load_learned_terms_dict
 from ingest.wine_terms_dict import set_learned_terms
 
@@ -41,6 +41,7 @@ app.add_middleware(
 app.include_router(ingest.router, prefix="")  # /process-inventory senza /api prefix
 app.include_router(snapshot.router)  # /api/inventory/snapshot, /api/viewer/*, etc.
 app.include_router(movements.router, prefix="")  # /process-movement
+app.include_router(diagnostics.router)
 
 
 @app.on_event("startup")

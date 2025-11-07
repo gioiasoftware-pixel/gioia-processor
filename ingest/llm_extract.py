@@ -569,6 +569,17 @@ def deduplicate_wines(wines: List[Dict[str, Any]], merge_quantities: bool = True
     """
     seen = {}
     deduplicated = []
+    stage_priority = {
+        'stage1': 3,
+        'stage0_5': 2,
+        'stage2': 1,
+        'stage3': 0
+    }
+    enrichment_fields = [
+        'winery', 'producer', 'vintage', 'price', 'selling_price', 'cost_price',
+        'type', 'wine_type', 'grape_variety', 'region', 'country', 'supplier',
+        'classification', 'min_quantity', 'alcohol_content', 'description', 'notes'
+    ]
     
     for wine in wines:
         # Crea chiave univoca: name+winery+vintage
@@ -579,18 +590,36 @@ def deduplicate_wines(wines: List[Dict[str, Any]], merge_quantities: bool = True
         key = (name, winery, vintage)
         
         if key in seen:
-            # Duplicato trovato
             existing_wine = seen[key]
-            if merge_quantities:
-                # Somma quantità
-                existing_qty = existing_wine.get('qty', 0) or 0
-                new_qty = wine.get('qty', 0) or 0
-                existing_wine['qty'] = existing_qty + new_qty
-                
-                # Mantieni dati più completi (preferisci valori non null)
-                for field in ['winery', 'vintage', 'price', 'type']:
+            existing_stage = existing_wine.get('source_stage', 'unknown')
+            new_stage = wine.get('source_stage', 'unknown')
+            existing_priority = stage_priority.get(existing_stage, -1)
+            new_priority = stage_priority.get(new_stage, -1)
+
+            existing_qty = existing_wine.get('qty', 0) or 0
+            new_qty = wine.get('qty', 0) or 0
+            total_qty = existing_qty + new_qty if merge_quantities else existing_qty or new_qty
+
+            if new_priority > existing_priority:
+                # Sostituisci con dati più affidabili mantenendo qty aggregata
+                existing_wine.clear()
+                existing_wine.update(wine)
+                if merge_quantities:
+                    existing_wine['qty'] = total_qty
+                seen[key] = existing_wine
+            else:
+                # Mantieni esistente e arricchisci solo campi mancanti
+                if merge_quantities:
+                    existing_wine['qty'] = total_qty
+
+                for field in enrichment_fields:
                     if not existing_wine.get(field) and wine.get(field):
                         existing_wine[field] = wine[field]
+                # Preferisci wine_type consistente
+                if not existing_wine.get('wine_type') and wine.get('type'):
+                    existing_wine['wine_type'] = wine.get('type')
+                if not existing_wine.get('type') and wine.get('wine_type'):
+                    existing_wine['type'] = wine.get('wine_type')
         else:
             seen[key] = wine.copy()
             deduplicated.append(seen[key])
@@ -734,6 +763,7 @@ async def extract_llm_mode(
                 )
                 
                 if is_valid_name and (has_other_data or len(name) > 2):  # Permetti name solo se ha altri dati o è abbastanza lungo
+                    normalized['source_stage'] = 'stage3'
                     normalized_wines.append(normalized)
                     logger.debug(f"[LLM_EXTRACT] Vino aggiunto a normalized_wines (totale: {len(normalized_wines)})")
                 else:
@@ -772,15 +802,19 @@ async def extract_llm_mode(
         
         elapsed_sec = time.time() - start_time
         
+        confidence = rows_valid / len(normalized_wines) if normalized_wines else 0.0
+
         metrics = {
             'rows_total': len(normalized_wines),
             'rows_valid': rows_valid,
             'rows_rejected': rows_rejected,
             'rejection_reasons': validation_stats['rejection_reasons'],
-            'chunks': len(chunks),
+            'chunks_processed': len(chunks),
+            'filtered_invalid_name': filtered_invalid_name,
+            'filtered_empty': filtered_empty,
+            'elapsed_sec': elapsed_sec,
             'wines_extracted': len(all_wines),
-            'wines_deduplicated': len(deduplicated_wines),
-            'elapsed_sec': elapsed_sec
+            'confidence': confidence
         }
         
         # 7. Decisione: se 0 valide → fallimento, altrimenti → SALVA

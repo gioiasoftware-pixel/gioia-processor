@@ -435,6 +435,7 @@ async def normalize_saved_inventory(
         {
             "total_wines": int,
             "invalid_wines_removed": int,
+            "invalid_wines_flagged": int,
             "normalized_count": int,
             "region_extracted": int,
             "country_inferred": int,
@@ -446,6 +447,7 @@ async def normalize_saved_inventory(
     stats = {
         "total_wines": 0,
         "invalid_wines_removed": 0,
+        "invalid_wines_flagged": 0,
         "normalized_count": 0,
         "region_extracted": 0,
         "country_inferred": 0,
@@ -509,26 +511,14 @@ async def normalize_saved_inventory(
             else:
                 valid_wines.append(wine)
         
-        # Rimuovi vini invalidi dal database
+        # Audit invalidi senza cancellare automaticamente (safe mode)
         if invalid_wine_ids:
-            # Usa IN con lista per compatibilità asyncpg
-            # Costruisci query con placeholder per ogni ID
-            placeholders = ','.join([f':id_{i}' for i in range(len(invalid_wine_ids))])
-            delete_query = sql_text(f"""
-                DELETE FROM {table_name}
-                WHERE id IN ({placeholders}) AND user_id = :user_id
-            """)
-            params = {f'id_{i}': wine_id for i, wine_id in enumerate(invalid_wine_ids)}
-            params['user_id'] = user_id
-            await session.execute(delete_query, params)
-            await session.commit()
-            stats["invalid_wines_removed"] = len(invalid_wine_ids)
-            
-            # Log nomi vini rimossi (primi 10)
-            removed_names = [w.name for w in wines if w.id in invalid_wine_ids][:10]
-            logger.info(
-                f"[POST_PROCESSING] Job {job_id}: Rimossi {len(invalid_wine_ids)} vini con nomi invalidi "
-                f"(esempi: {removed_names}{'...' if len(invalid_wine_ids) > 10 else ''})"
+            stats["invalid_wines_flagged"] = len(invalid_wine_ids)
+            flagged_names = [w.name for w in wines if w.id in invalid_wine_ids][:10]
+            logger.warning(
+                f"[POST_PROCESSING] Job {job_id}: "
+                f"Identificati {len(invalid_wine_ids)} vini con nomi potenzialmente invalidi. "
+                f"Nessuna cancellazione automatica (safe mode). Esempi: {flagged_names}{'...' if len(invalid_wine_ids) > 10 else ''}"
             )
         
         # Processa ogni vino valido per normalizzazione
@@ -665,6 +655,7 @@ async def normalize_saved_inventory(
             logger.info(
                 f"[POST_PROCESSING] Job {job_id}: Normalizzazione completata - "
                 f"{stats['invalid_wines_removed']} vini invalidi rimossi, "
+                f"{stats['invalid_wines_flagged']} flag invalidi, "
                 f"{stats['normalized_count']} vini aggiornati "
                 f"({stats['region_extracted']} regioni estratte, "
                 f"{stats['country_inferred']} country inferiti, "
@@ -722,6 +713,8 @@ async def normalize_saved_inventory(
                     f"applicazione batch a tutti i vini..."
                 )
                 
+                allowed_batch_fields = {"name", "wine_type", "region", "country", "classification", "supplier", "producer"}
+
                 for pattern in common_patterns:
                     field = pattern.get("field")
                     old_value_pattern = pattern.get("old_value_pattern")
@@ -729,6 +722,12 @@ async def normalize_saved_inventory(
                     inferred_type = pattern.get("inferred_type")
                     
                     if not field or not old_value_pattern:
+                        continue
+
+                    if field not in allowed_batch_fields:
+                        logger.debug(
+                            f"[POST_PROCESSING] Job {job_id}: campo '{field}' non consentito per correzione batch, skip"
+                        )
                         continue
                     
                     # Trova tutti i vini con questo pattern

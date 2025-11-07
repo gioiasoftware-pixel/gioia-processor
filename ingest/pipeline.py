@@ -144,7 +144,8 @@ async def process_file(
             stage=stage_used,
             decision=decision,
             rows_valid=len(wines_data),
-            elapsed_sec=aggregated_metrics['total_elapsed_sec']
+            elapsed_sec=aggregated_metrics['total_elapsed_sec'],
+            metrics=aggregated_metrics
         )
         
         logger.info(

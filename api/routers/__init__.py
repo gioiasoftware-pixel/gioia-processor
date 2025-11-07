@@ -6,6 +6,6 @@ Moduli:
 - snapshot: Router per snapshot inventario e viewer (GET /api/inventory/*, GET /api/viewer/*)
 - movements: Router per movimenti (POST /process-movement)
 """
-from . import ingest, snapshot, movements
+from . import ingest, snapshot, movements, diagnostics
 
-__all__ = ["ingest", "snapshot", "movements"]
+__all__ = ["ingest", "snapshot", "movements", "diagnostics"]
