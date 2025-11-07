@@ -103,8 +103,17 @@ def map_headers_v2(columns: List[str], cfg: ProcessorConfig) -> Dict[str, Dict[s
     scores = np.zeros((size, size))
 
     for i, column in enumerate(columns):
+        normalized_col = column.lower().strip()
         for j, field in enumerate(DATABASE_FIELDS):
             score = col_score(column, field)
+
+            if normalized_col.startswith("q ") or normalized_col.startswith("q_") or normalized_col.startswith("q.") or " q" in normalized_col:
+                if field not in ("qty", "min_quantity"):
+                    score = min(score, 0.3)
+
+            if normalized_col == "cantina" and field == "winery":
+                score = 1.0
+
             scores[i, j] = score
             cost[i, j] = 1.0 - score
 
@@ -119,6 +128,35 @@ def map_headers_v2(columns: List[str], cfg: ProcessorConfig) -> Dict[str, Dict[s
 
     for column in columns:
         mapping.setdefault(column, {"field": None, "score": 0.0})
+
+    # Heuristic fix-ups for common Italian inventories
+    winery_column = _resolve_field_column(mapping, "winery")
+    if winery_column is None:
+        for column in columns:
+            if column.lower().strip() == "cantina":
+                # Clear previous winery assignment if any
+                for other in list(mapping.keys()):
+                    if mapping[other].get("field") == "winery":
+                        mapping[other] = {"field": None, "score": mapping[other].get("score", 0.0)}
+                mapping[column] = {"field": "winery", "score": 1.0}
+                winery_column = column
+                break
+    elif winery_column:
+        # Prefer the explicit 'Cantina' column over generic 'winery' duplicates
+        for column in columns:
+            if column.lower().strip() == "cantina" and column != winery_column:
+                mapping[winery_column] = {"field": None, "score": mapping[winery_column].get("score", 0.0)}
+                mapping[column] = {"field": "winery", "score": 1.0}
+                winery_column = column
+                break
+
+    qty_column = _resolve_field_column(mapping, "qty")
+    if qty_column is None:
+        for column in columns:
+            norm = column.lower().strip()
+            if norm in {"q cantina", "q_init", "q iniziale", "q magazzino"} or norm.startswith("q "):
+                mapping[column] = {"field": "qty", "score": 0.9}
+                break
 
     return mapping
 
@@ -188,6 +226,66 @@ def parse_dataframe(
     return rows, mapping
 
 
+def _is_empty_field(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == "" or value.strip().lower() in {"nan", "none", "null", "n/a"}
+    if isinstance(value, (int, float)):
+        import math
+        if isinstance(value, float) and math.isnan(value):
+            return True
+        return value == 0
+    return False
+HEADER_KEYWORDS = {
+    "indice",
+    "id",
+    "status",
+    "totale",
+    "categoria",
+    "note",
+    "filtro",
+    "inventario",
+    "annotazioni",
+}
+
+VALUE_KEYWORDS = {
+    "indice",
+    "id",
+    "totale",
+    "categoria",
+    "inventario",
+    "section",
+    "page",
+    "sheet",
+}
+
+
+def _looks_like_section_header(row: WineRow) -> bool:
+    values = [
+        row.name.value,
+        row.winery.value,
+        row.supplier.value,
+        row.grape_variety.value,
+        row.type.value,
+    ]
+    text_values = [str(v).strip().lower() for v in values if isinstance(v, str) and v and str(v).strip()]
+
+    if not text_values:
+        return False
+
+    for text in text_values:
+        if text in VALUE_KEYWORDS:
+            return True
+        if len(text) <= 3 and text.isalpha():
+            return True
+
+    if all(text in HEADER_KEYWORDS for text in text_values):
+        return True
+
+    return False
+
+
 def _is_row_empty(row: WineRow) -> bool:
     name = row.name.value.strip() if isinstance(row.name.value, str) else ""
     if name:
@@ -202,12 +300,23 @@ def _is_row_empty(row: WineRow) -> bool:
         row.description.value,
         row.notes.value,
     ]
-    return all(value in (None, "") for value in checks)
+    if all(_is_empty_field(value) for value in checks):
+        return True
+
+    # Righe header/section con testo ma senza dati
+    if _looks_like_section_header(row):
+        return True
+
+    return False
 
 
 def _coerce_number(value: Any) -> Optional[float]:
-    if value in (None, "", float("nan")):
+    if value in (None, ""):
         return None
+    if isinstance(value, float):
+        import math
+        if math.isnan(value):
+            return None
     if isinstance(value, (int, float)):
         return float(value)
     try:
@@ -228,7 +337,10 @@ def wine_row_to_payload(row: WineRow) -> Dict[str, Any]:
     def _sanitize(value: Any) -> Optional[str]:
         if value in (None, ""):
             return None
-        return str(value).strip()
+        text = str(value).strip()
+        if text.lower() in {"nan", "none", "null", "n/a"}:
+            return None
+        return text
 
     qty_value = _coerce_number(row.qty.value)
     price_value = _coerce_number(row.price.value)
@@ -322,7 +434,8 @@ def parse_classic(
 
         rows_valid = validation_stats["rows_valid"]
         rows_rejected = validation_stats["rows_rejected"]
-        valid_rows_ratio = rows_valid / rows_total if rows_total else 0.0
+        effective_total = max(rows_total - filtered_empty, 1)
+        valid_rows_ratio = rows_valid / effective_total if effective_total else 0.0
 
         schema_score = calculate_schema_score(header_mapping)
         elapsed_ms = (time.time() - start_time) * 1000
