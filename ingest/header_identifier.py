@@ -39,6 +39,8 @@ def identify_header_row(row: List[str], confidence_threshold: float = 0.60) -> O
     """
     Identifica se una riga è un header e mappa le colonne ai campi database.
     
+    Migliorato per distinguere meglio tra "nome" e "produttore" usando pattern specifici.
+    
     Args:
         row: Lista di valori della riga
         confidence_threshold: Soglia confidence per fuzzy matching (default 0.60)
@@ -49,18 +51,50 @@ def identify_header_row(row: List[str], confidence_threshold: float = 0.60) -> O
     if not row or len(row) < 2:
         return None
     
-    # Prepara lista target per rapidfuzz (tutti i sinonimi)
+    # Pattern specifici per distinguere "name" da "winery"
+    # Pattern più specifici hanno priorità
+    NAME_SPECIFIC_PATTERNS = [
+        'nome vino', 'wine name', 'nome prodotto', 'nome articolo',
+        'denominazione vino', 'etichetta', 'label', 'titolo',
+        'descrizione prodotto', 'prodotto nome', 'articolo nome'
+    ]
+    
+    WINERY_SPECIFIC_PATTERNS = [
+        'produttore', 'producer', 'winery', 'cantina', 'fattoria',
+        'casa vinicola', 'azienda vinicola', 'casa produttrice',
+        'produttore vino', 'azienda produttrice', 'marca vino',
+        'brand vino', 'cantina produttrice', 'fattoria vinicola',
+        'domaine', 'chateau', 'château'
+    ]
+    
+    # Prepara lista target per rapidfuzz con priorità
+    # Prima pattern specifici, poi generici
     target_list = []
     target_to_field = {}
+    target_priority = {}  # Priorità più alta = più specifico
     
     for field_name, variants in COLUMN_MAPPINGS_EXTENDED.items():
         for variant in variants:
             normalized_variant = normalize_column_name(variant)
+            
+            # Assegna priorità basata su specificità
+            priority = 1  # Default
+            if field_name == 'name' and any(p in normalized_variant for p in NAME_SPECIFIC_PATTERNS):
+                priority = 3  # Pattern specifici per name
+            elif field_name == 'winery' and any(p in normalized_variant for p in WINERY_SPECIFIC_PATTERNS):
+                priority = 3  # Pattern specifici per winery
+            elif field_name in ['name', 'winery']:
+                priority = 2  # Pattern generici per name/winery
+            else:
+                priority = 1  # Altri campi
+            
             target_list.append(normalized_variant)
             target_to_field[normalized_variant] = field_name
+            target_priority[normalized_variant] = priority
     
     # Verifica ogni cella della riga
     field_mapping = {}
+    field_scores = {}  # Traccia score per ogni field per risolvere conflitti
     header_score = 0
     total_cells = 0
     
@@ -74,28 +108,75 @@ def identify_header_row(row: List[str], confidence_threshold: float = 0.60) -> O
         
         total_cells += 1
         
+        # Controlla prima pattern specifici per name/winery
+        is_name_specific = any(p in cell_normalized for p in NAME_SPECIFIC_PATTERNS)
+        is_winery_specific = any(p in cell_normalized for p in WINERY_SPECIFIC_PATTERNS)
+        
+        # Se matcha pattern specifico, assegna direttamente
+        if is_name_specific and 'name' not in field_mapping:
+            field_mapping['name'] = col_idx
+            field_scores['name'] = 100  # Score massimo per pattern specifico
+            header_score += 100
+            logger.debug(f"[HEADER_ID] Colonna {col_idx} ('{cell}') → 'name' (pattern specifico)")
+            continue
+        elif is_winery_specific and 'winery' not in field_mapping:
+            field_mapping['winery'] = col_idx
+            field_scores['winery'] = 100  # Score massimo per pattern specifico
+            header_score += 100
+            logger.debug(f"[HEADER_ID] Colonna {col_idx} ('{cell}') → 'winery' (pattern specifico)")
+            continue
+        
         # Usa rapidfuzz per trovare match
         if target_list:
-            result = process.extractOne(
+            # Trova tutti i match possibili (non solo il migliore)
+            results = process.extract(
                 cell_normalized,
                 target_list,
                 scorer=fuzz.ratio,
-                score_cutoff=int(confidence_threshold * 100)
+                score_cutoff=int(confidence_threshold * 100),
+                limit=5  # Top 5 match
             )
             
-            if result:
-                matched_variant, score, _ = result
-                field_name = target_to_field[matched_variant]
+            if results:
+                # Ordina per (priority * score) per dare priorità a pattern specifici
+                best_match = None
+                best_score_weighted = 0
                 
-                # Evita conflitti: se field già mappato, usa quello con score più alto
-                if field_name not in field_mapping:
-                    field_mapping[field_name] = col_idx
-                    header_score += score
-                else:
-                    # Se score migliore, aggiorna
-                    existing_col = field_mapping[field_name]
-                    # Mantieni quello con score più alto (per ora mantieni il primo)
-                    pass
+                for matched_variant, score, _ in results:
+                    field_name = target_to_field[matched_variant]
+                    priority = target_priority[matched_variant]
+                    weighted_score = score * priority
+                    
+                    if weighted_score > best_score_weighted:
+                        best_match = (field_name, score, priority)
+                        best_score_weighted = weighted_score
+                
+                if best_match:
+                    field_name, _, score, priority = best_match
+                    
+                    # Gestisci conflitti: se field già mappato, usa quello con score pesato più alto
+                    if field_name not in field_mapping:
+                        field_mapping[field_name] = col_idx
+                        field_scores[field_name] = weighted_score
+                        header_score += score
+                        logger.debug(
+                            f"[HEADER_ID] Colonna {col_idx} ('{cell}') → '{field_name}' "
+                            f"(score={score}, priority={priority}, weighted={weighted_score:.1f})"
+                        )
+                    else:
+                        # Conflitto: confronta score pesato
+                        existing_score = field_scores.get(field_name, 0)
+                        if weighted_score > existing_score:
+                            # Aggiorna con match migliore
+                            old_col = field_mapping[field_name]
+                            field_mapping[field_name] = col_idx
+                            field_scores[field_name] = weighted_score
+                            header_score = header_score - (existing_score / priority) + score
+                            logger.debug(
+                                f"[HEADER_ID] Colonna {col_idx} ('{cell}') → '{field_name}' "
+                                f"(aggiornato, score={score}, priority={priority}, weighted={weighted_score:.1f}, "
+                                f"sostituisce colonna {old_col})"
+                            )
     
     # È un header se:
     # 1. Ha mappato almeno 2 campi (name + almeno un altro)
