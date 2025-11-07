@@ -164,6 +164,17 @@ def parse_classic(
         filtered_empty_count = 0
         normalization_errors = 0
         
+        supplier_blacklist = {
+            'ceretto', 'winesider', 'enoclub', 'marzullo', 'toso',
+            'fabio oliveri', 'max sedda', 'ti mossi', 'moretto'
+        }
+        generic_blacklist = {
+            'producer', 'fornitore', 'supplier', 'cantina', 'wine', 'indice',
+            'bolle', 'bianchi', 'rossi', 'rosè', 'rose', 'passiti', '-', '--'
+        }
+
+        filtered_blacklist_count = 0
+
         for index, row in df.iterrows():
             try:
                 # Converte riga in dict
@@ -210,15 +221,37 @@ def parse_classic(
                 # Riga completamente vuota: name invalido E nessun dato significativo
                 is_completely_empty = is_invalid_name and not has_meaningful_data
                 
-                # Conserva se: name valido OPPURE ha dati significativi (lascia che Stage 3 gestisca)
-                if not is_completely_empty:
+                skip_reason = None
+                name_lower = name.lower()
+                winery_lower = (normalized_row.get('winery') or '').strip().lower()
+                quantity_val = normalized_row.get('qty', 0) or 0
+                price_val = normalized_row.get('price')
+                supplier_lower = (normalized_row.get('supplier') or '').strip().lower()
+
+                # Heuristic blacklist
+                if name_lower in generic_blacklist:
+                    skip_reason = f"name_blacklist='{name_lower}'"
+                elif name_lower in supplier_blacklist and (not supplier_lower or supplier_lower == name_lower):
+                    skip_reason = f"name_is_supplier='{name_lower}'"
+                elif name_lower == winery_lower and name_lower in supplier_blacklist:
+                    skip_reason = f"name_equals_supplier='{name_lower}'"
+                elif name_lower == winery_lower and quantity_val == 0 and (price_val is None or price_val == 0):
+                    skip_reason = "name_equals_winery_and_zero_data"
+
+                if not skip_reason and is_completely_empty:
+                    skip_reason = "completely_empty"
+
+                if not skip_reason:
                     wines_data.append(normalized_row)
                 else:
-                    filtered_empty_count += 1
-                    logger.debug(
-                        f"[PARSER] Riga {index} scartata: completamente vuota "
-                        f"(name='{name[:30] if name else 'EMPTY'}', has_data={has_meaningful_data})"
-                    )
+                    if skip_reason == "completely_empty":
+                        filtered_empty_count += 1
+                    else:
+                        filtered_blacklist_count += 1
+                        logger.debug(
+                            f"[PARSER] Riga {index} scartata per {skip_reason} "
+                            f"(winery='{normalized_row.get('winery', '')[:30]}', qty={quantity_val}, price={price_val})"
+                        )
             except Exception as e:
                 normalization_errors += 1
                 logger.warning(f"[PARSER] Error normalizing row {index}: {e}")
@@ -226,7 +259,7 @@ def parse_classic(
         
         logger.info(
             f"[PARSER] Stage 1 normalizzazione completata: {len(wines_data)} vini estratti da {rows_total} righe "
-            f"(scartati: {filtered_empty_count} righe vuote, {normalization_errors} errori normalizzazione)"
+            f"(scartati: {filtered_empty_count} vuote, {filtered_blacklist_count} blacklist, {normalization_errors} errori normalizzazione)"
         )
         
         # Validation: valida con Pydantic
@@ -253,7 +286,8 @@ def parse_classic(
             'rejection_reasons': validation_stats['rejection_reasons'],
             'elapsed_ms': elapsed_ms,
             'parse_info': parse_info,
-            'header_mapping': header_mapping
+            'header_mapping': header_mapping,
+            'rows_filtered_blacklist': filtered_blacklist_count
         }
         
         # Decisione: se supera soglie → SALVA, altrimenti → Stage 2
