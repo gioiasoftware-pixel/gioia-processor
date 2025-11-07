@@ -4,18 +4,7 @@ LLM Targeted (Stage 2) - IA mirata per micro-aggiustamenti economici.
 Usa IA solo per ambiguità locali, non per tutto il file.
 Conforme a "Update processor.md" - Stage 2: IA mirata.
 """
-import json
-import logging
-import time
-from typing import List, Dict, Any, Optional, Tuple
-import openai
-import os
-from core.config import get_config
-from core.logger import log_json
-
 from __future__ import annotations
-
-"""Stage 2: disambiguazione header con LLM leggero."""
 
 import json
 import logging
