@@ -27,6 +27,7 @@ env/
 ENV/
 env.bak/
 venv.bak/
+.venv/
 
 # Environment Variables
 .env
@@ -68,36 +69,21 @@ tmp/
 # Railway
 .railway/
 
-# AI/ML specific
-models/
-*.pkl
-*.joblib
-*.h5
-*.hdf5
+# Test artifacts / docs non necessari in produzione
+.pytest_cache/
+coverage/
+tests/
+report/
+migrations/
+docs/
 
-# OCR specific
-tesseract_data/
-*.traineddata
-
-# File uploads
+# Assets e file generati runtime
 uploads/
 processed_files/
 temp_files/
+screenshots/
 
-# Test files (non necessari in produzione)
-tests/
-*.md
-report/
-migrations/
-FLOW_PROCESSOR_E_COSTI_IA.md
-SOLUZIONI_ESTRAZIONE_VINI.md
-
-# Git
-.git/
-.gitignore
-.gitattributes
-
-# Documentation
+# Documentazione (mantieni README)
 *.md
 !README.md
 
