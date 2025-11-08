@@ -45,6 +45,18 @@ DATABASE_FIELDS = [
     "notes",
 ]
 
+def _clean_csv_value(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+            text = text[1:-1]
+        text = text.replace('""', '"')
+        if text in {"-", "--"}:
+            text = ""
+        return text
+    return value
+
+
 SYNONYMS: Dict[str, List[str]] = {
     "name": ["etichetta", "label", "prodotto", "articolo", "descrizione breve", "vino"],
     "winery": ["cantina", "produttore", "azienda", "azienda agricola", "domain", "domaine"],
@@ -182,14 +194,14 @@ def parse_dataframe(
         def get_fv(field: str, fallbacks: Optional[List[str]] = None):
             column = _resolve_field_column(mapping, field)
             if column is not None and column in series:
-                value = series[column]
+                value = _clean_csv_value(series[column])
                 score = float(mapping[column]["score"])
                 return fv(value, score, "stage1", {**lineage_base, "column": column})
 
             for fb in fallbacks or []:
                 candidate = lower_lookup.get(fb.lower())
                 if candidate is not None and candidate in series:
-                    value = series[candidate]
+                    value = _clean_csv_value(series[candidate])
                     if value not in (None, ""):
                         return fv(value, 0.4, "stage1", {**lineage_base, "column": candidate})
 
