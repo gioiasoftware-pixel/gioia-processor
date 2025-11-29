@@ -147,6 +147,10 @@ def map_headers_v2(columns: List[str], cfg: ProcessorConfig) -> Dict[str, Dict[s
 
             if normalized_col == "cantina" and field == "winery":
                 score = 1.0
+            
+            # Fix-up per "Annata" -> vintage (match esatto)
+            if normalized_col == "annata" and field == "vintage":
+                score = 1.0
 
             scores[i, j] = score
             cost[i, j] = 1.0 - score
