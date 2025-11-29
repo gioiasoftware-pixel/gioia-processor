@@ -955,13 +955,18 @@ async def normalize_saved_inventory(
                 # Due vini sono duplicati SOLO se TUTTE le informazioni sono identiche
                 # Normalizza i valori per confronto corretto (lowercase per stringhe, gestisce None)
                 def normalize_value(value):
-                    """Normalizza valore per confronto: stringhe lowercase, None rimane None"""
+                    """Normalizza valore per confronto: stringhe lowercase, mantiene 0 per numeri"""
                     if value is None:
                         return None
                     if isinstance(value, str):
-                        return value.lower().strip() if value.strip() else None
+                        normalized = value.lower().strip()
+                        return normalized if normalized else None
+                    # Per numeri, mantieni 0 (0 è un valore valido, non None)
                     if isinstance(value, (int, float)):
-                        return value if value != 0 else None  # 0 = None per confronto
+                        import math
+                        if isinstance(value, float) and math.isnan(value):
+                            return None
+                        return value  # Mantieni 0, non convertirlo in None
                     return value
                 
                 wine_key = (
