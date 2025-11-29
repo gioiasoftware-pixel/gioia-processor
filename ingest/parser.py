@@ -58,12 +58,12 @@ def _clean_csv_value(value: Any) -> Any:
 
 
 SYNONYMS: Dict[str, List[str]] = {
-    "name": ["etichetta", "label", "prodotto", "articolo", "descrizione breve", "vino"],
+    "name": ["etichetta", "nome_etichetta", "nome etichetta", "label", "prodotto", "articolo", "descrizione breve", "vino"],
     "winery": ["cantina", "produttore", "azienda", "azienda agricola", "domain", "domaine"],
     "supplier": ["fornitore", "distributore", "importatore", "grossista", "supplier", "wholesaler"],
     "vintage": ["annata", "millésime", "year", "anno"],
-    "qty": ["qta", "quantita", "quantità", "pezzi", "bottiglie", "btl", "stock"],
-    "price": ["prezzo", "prezzo unitario", "p.u.", "€/pz", "costo", "listino"],
+    "qty": ["qta", "quantita", "quantità", "quantita", "pezzi", "bottiglie", "btl", "stock"],
+    "price": ["prezzo", "prezzo unitario", "prezzo_unitario", "prezzo_unit", "p.u.", "€/pz", "costo", "listino"],
     "type": ["tipologia", "colore", "style", "rosso", "bianco", "rosé", "metodo"],
     "grape_variety": ["uvaggio", "vitigno", "grape variety", "varietà uva"],
     "region": ["regione", "zona", "area", "territorio"],
@@ -98,13 +98,35 @@ def calculate_schema_score(mapping: Dict[str, Dict[str, Any]]) -> float:
 
 
 def col_score(colname: str, field: str) -> float:
-    base = fuzz.token_set_ratio(colname.lower(), field)
+    """Calcola score di matching tra nome colonna e campo target."""
+    normalized_col = colname.lower().strip()
+    
+    # Rimuovi underscore e sostituisci con spazi per matching migliore
+    normalized_col_alt = normalized_col.replace('_', ' ').replace('-', ' ')
+    
+    # Match diretto
+    base = fuzz.token_set_ratio(normalized_col, field)
+    
+    # Match con underscore sostituiti
+    base_alt = fuzz.token_set_ratio(normalized_col_alt, field)
+    
+    # Match con sinonimi
     syn_scores = [
-        fuzz.token_set_ratio(colname.lower(), synonym)
+        fuzz.token_set_ratio(normalized_col, synonym.lower())
         for synonym in SYNONYMS.get(field, [])
     ]
-    best_syn = max(syn_scores + [0])
-    return max(base, best_syn) / 100.0
+    
+    # Match sinonimi con underscore sostituiti
+    syn_scores_alt = [
+        fuzz.token_set_ratio(normalized_col_alt, synonym.lower())
+        for synonym in SYNONYMS.get(field, [])
+    ]
+    
+    # Prendi il miglior score
+    best_syn = max(syn_scores + syn_scores_alt + [0])
+    best_base = max(base, base_alt)
+    
+    return max(best_base, best_syn) / 100.0
 
 
 def map_headers_v2(columns: List[str], cfg: ProcessorConfig) -> Dict[str, Dict[str, Any]]:
