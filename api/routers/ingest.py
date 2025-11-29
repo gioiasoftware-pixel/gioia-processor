@@ -411,8 +411,95 @@ async def process_inventory_background(
                             except:
                                 pass
                 
-                # Avvia post-processing in background (non blocca)
-                asyncio.create_task(run_post_processing())
+                # ============================================================
+                # POST-PROCESSING DISABILITATO per inventari puliti
+                # ============================================================
+                # Il post-processing (normalizzazione, deduplicazione, validazione LLM)
+                # è stato disabilitato perché troppo aggressivo per inventari già puliti.
+                # Rimuove vini che non sono realmente duplicati.
+                #
+                # Per riattivare il post-processing, decommentare le righe seguenti:
+                #
+                # async def run_post_processing():
+                #     """Esegue post-processing in background (non blocca risposta)"""
+                #     try:
+                #         logger.info(
+                #             f"[POST_PROCESSING] Job {job_id}: Avvio normalizzazione "
+                #             f"in background per {telegram_id}/{business_name}"
+                #         )
+                #         from post_processing import normalize_saved_inventory
+                #         
+                #         stats = await normalize_saved_inventory(
+                #             job_id=job_id,
+                #             telegram_id=telegram_id,
+                #             business_name=business_name
+                #         )
+                #         
+                #         logger.info(
+                #             f"[POST_PROCESSING] Job {job_id}: Normalizzazione completata - "
+                #             f"{stats.get('normalized_count', 0)}/{stats.get('total_rows', 0)} vini normalizzati, "
+                #             f"{stats.get('llm_corrections_applied', 0)} correzioni LLM applicate, "
+                #             f"{stats.get('duplicates_removed', 0)} duplicati rimossi"
+                #         )
+                #         
+                #         # Notifica utente se ci sono duplicati rimossi
+                #         duplicates_count = stats.get('duplicates_removed', 0)
+                #         if duplicates_count > 0:
+                #             try:
+                #                 from admin_notifications import enqueue_admin_notification
+                #                 
+                #                 await enqueue_admin_notification(
+                #                     event_type="duplicates_removed",
+                #                     telegram_id=telegram_id,
+                #                     payload={
+                #                         "business_name": business_name,
+                #                         "duplicates_count": duplicates_count,
+                #                         "job_id": job_id
+                #                     }
+                #                 )
+                #                 
+                #                 # Notifica anche direttamente su Telegram se configurato
+                #                 try:
+                #                     config = get_config()
+                #                     if config.telegram_bot_token:
+                #                         import httpx
+                #                         message = (
+                #                             f"ℹ️ **Post-processing completato**\n\n"
+                #                             f"📊 **Risultati:**\n"
+                #                             f"• {stats.get('normalized_count', 0)} vini normalizzati\n"
+                #                             f"• {stats.get('llm_corrections_applied', 0)} correzioni LLM applicate\n"
+                #                             f"• {duplicates_count} duplicati rimossi"
+                #                         )
+                #                         async with httpx.AsyncClient() as client:
+                #                             await client.post(
+                #                                 f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage",
+                #                                 json={
+                #                                     "chat_id": telegram_id,
+                #                                     "text": message,
+                #                                     "parse_mode": "Markdown"
+                #                                 },
+                #                                 timeout=10.0
+                #                             )
+                #                 except Exception as notif_error:
+                #                     logger.warning(
+                #                         f"[POST_PROCESSING] Errore invio messaggio Telegram per duplicati: {notif_error}",
+                #                         exc_info=True
+                #                     )
+                #             except Exception as notif_error:
+                #                 logger.warning(
+                #                     f"[POST_PROCESSING] Errore invio messaggio Telegram per duplicati: {notif_error}",
+                #                     exc_info=True
+                #                 )
+                #     except Exception as post_error:
+                #         # Non bloccare il flusso principale se post-processing fallisce
+                #         logger.warning(
+                #             f"[POST_PROCESSING] Job {job_id}: Errore post-processing "
+                #             f"(non critico): {post_error}",
+                #             exc_info=True
+                #         )
+                # 
+                # # Avvia post-processing in background (non blocca)
+                # asyncio.create_task(run_post_processing())
                 
                 break
                 
