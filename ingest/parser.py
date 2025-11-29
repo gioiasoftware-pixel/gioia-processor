@@ -378,7 +378,40 @@ def wine_row_to_payload(row: WineRow) -> Dict[str, Any]:
 
     qty_value = _coerce_number(row.qty.value)
     price_value = _coerce_number(row.price.value)
-    vintage_value = _coerce_number(row.vintage.value)
+    
+    # Normalizza vintage: estrae anno 4 cifre (1900-2099)
+    vintage_value = None
+    if row.vintage.value is not None:
+        try:
+            # Prova prima come numero diretto
+            if isinstance(row.vintage.value, (int, float)):
+                import math
+                if isinstance(row.vintage.value, float) and math.isnan(row.vintage.value):
+                    vintage_value = None
+                else:
+                    year_int = int(float(row.vintage.value))
+                    if 1900 <= year_int <= 2099:
+                        vintage_value = year_int
+            else:
+                # Prova con regex per estrarre anno 4 cifre
+                import re
+                value_str = str(row.vintage.value).strip()
+                match = re.search(r'\b(19\d{2}|20\d{2})\b', value_str)
+                if match:
+                    year_int = int(match.group())
+                    if 1900 <= year_int <= 2099:
+                        vintage_value = year_int
+                else:
+                    # Fallback: prova a convertire direttamente
+                    try:
+                        year_int = int(float(value_str))
+                        if 1900 <= year_int <= 2099:
+                            vintage_value = year_int
+                    except (ValueError, TypeError):
+                        vintage_value = None
+        except Exception as e:
+            logger.debug(f"[PARSER] Errore normalizzazione vintage '{row.vintage.value}': {e}")
+            vintage_value = None
 
     wine_type = row.type.value.lower() if isinstance(row.type.value, str) else row.type.value
     mapped_type = TYPE_MAP.get(wine_type) if isinstance(wine_type, str) else None
@@ -387,7 +420,7 @@ def wine_row_to_payload(row: WineRow) -> Dict[str, Any]:
         "name": str(row.name.value).strip() if isinstance(row.name.value, str) else "",
         "winery": _sanitize(row.winery.value),
         "supplier": _sanitize(row.supplier.value),
-        "vintage": int(vintage_value) if vintage_value is not None else None,
+        "vintage": vintage_value,
         "qty": int(qty_value) if qty_value is not None else 0,
         "price": float(price_value) if price_value is not None else None,
         "type": mapped_type,
