@@ -991,17 +991,22 @@ async def normalize_saved_inventory(
                 if wine_key in seen_wines:
                     # Duplicato completo trovato - marca per eliminazione
                     duplicate_ids.append(wine.id)
-                    logger.info(
-                        f"[POST_PROCESSING] Job {job_id}: Vino {wine.id} è duplicato COMPLETO di {seen_wines[wine_key]} "
-                        f"(TUTTI i campi identici: name='{wine.name}', producer='{wine.producer if hasattr(wine, 'producer') else 'N/A'}, "
-                        f"vintage={wine.vintage if hasattr(wine, 'vintage') else 'N/A'}, "
-                        f"quantity={wine.quantity if hasattr(wine, 'quantity') else 'N/A'}, "
-                        f"grape_variety='{wine.grape_variety if hasattr(wine, 'grape_variety') else 'N/A'}, "
-                        f"region='{wine.region if hasattr(wine, 'region') else 'N/A'}, "
-                        f"country='{wine.country if hasattr(wine, 'country') else 'N/A'}, "
-                        f"wine_type='{wine.wine_type if hasattr(wine, 'wine_type') else 'N/A'}, "
-                        f"classification='{wine.classification if hasattr(wine, 'classification') else 'N/A'}, "
-                        f"selling_price={wine.selling_price if hasattr(wine, 'selling_price') else 'N/A'})"
+                    existing_id = seen_wines[wine_key]
+                    logger.warning(
+                        f"[POST_PROCESSING] Job {job_id}: ⚠️ Vino {wine.id} è duplicato COMPLETO di {existing_id} "
+                        f"(TUTTI i campi identici):\n"
+                        f"  - name='{wine.name}' (normalized: '{normalize_value(wine.name if hasattr(wine, 'name') else None)}')\n"
+                        f"  - producer='{wine.producer if hasattr(wine, 'producer') else 'N/A'}'\n"
+                        f"  - supplier='{wine.supplier if hasattr(wine, 'supplier') else 'N/A'}'\n"
+                        f"  - vintage={wine.vintage if hasattr(wine, 'vintage') else 'N/A'}\n"
+                        f"  - quantity={wine.quantity if hasattr(wine, 'quantity') else 'N/A'}\n"
+                        f"  - grape_variety='{wine.grape_variety if hasattr(wine, 'grape_variety') else 'N/A'}'\n"
+                        f"  - region='{wine.region if hasattr(wine, 'region') else 'N/A'}'\n"
+                        f"  - country='{wine.country if hasattr(wine, 'country') else 'N/A'}'\n"
+                        f"  - wine_type='{wine.wine_type if hasattr(wine, 'wine_type') else 'N/A'}'\n"
+                        f"  - classification='{wine.classification if hasattr(wine, 'classification') else 'N/A'}'\n"
+                        f"  - selling_price={wine.selling_price if hasattr(wine, 'selling_price') else 'N/A'}\n"
+                        f"  - cost_price={wine.cost_price if hasattr(wine, 'cost_price') else 'N/A'}"
                     )
                 else:
                     # Primo vino con questa combinazione - mantieni
