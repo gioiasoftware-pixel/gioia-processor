@@ -77,7 +77,7 @@ async def startup_event():
             logger.warning("OpenAI API key not found - AI features disabled")
             
     except Exception as e:
-        logger.error(f"Error during startup: {e}")
+        logger.error(f"Error during startup: {e}", exc_info=True)
 
 
 @app.get("/health")

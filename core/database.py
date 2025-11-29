@@ -512,6 +512,6 @@ async def create_tables():
         logger.info("Database tables created successfully (public schema): users, processing_jobs, learned_problematic_terms")
         logger.info("Note: Tabelle inventario vengono create per-utente nello schema public via ensure_user_tables()")
     except Exception as e:
-        logger.error(f"Error creating database tables: {e}")
+        logger.error(f"Error creating database tables: {e}", exc_info=True)
         raise
 
