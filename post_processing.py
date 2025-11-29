@@ -951,25 +951,24 @@ async def normalize_saved_inventory(
             duplicate_ids = []
             
             for wine in wines_final:
-                # Crea chiave univoca basata su TUTTI i campi rilevanti
+                # Crea chiave univoca basata su campi identificativi (NON quantità o prezzo)
+                # Due vini con stesso nome, produttore, annata ma quantità/prezzo diversi NON sono duplicati
                 wine_key = (
-                    wine.name or '',
-                    wine.producer or '' if hasattr(wine, 'producer') else '',
+                    (wine.name or '').lower().strip(),
+                    (wine.producer or '').lower().strip() if hasattr(wine, 'producer') else '',
                     wine.vintage if hasattr(wine, 'vintage') and wine.vintage else None,
-                    wine.quantity if hasattr(wine, 'quantity') else 0,
-                    wine.selling_price if hasattr(wine, 'selling_price') and wine.selling_price else None,
-                    wine.region or '' if hasattr(wine, 'region') else '',
-                    wine.country or '' if hasattr(wine, 'country') else '',
-                    wine.wine_type or '' if hasattr(wine, 'wine_type') else '',
-                    wine.classification or '' if hasattr(wine, 'classification') else ''
+                    # NON includere quantity, price, region, country, type, classification
+                    # perché questi possono variare anche per lo stesso vino
                 )
                 
                 if wine_key in seen_wines:
                     # Duplicato completo trovato - marca per eliminazione
                     duplicate_ids.append(wine.id)
-                    logger.debug(
+                    logger.info(
                         f"[POST_PROCESSING] Job {job_id}: Vino {wine.id} è duplicato completo di {seen_wines[wine_key]} "
-                        f"(name='{wine.name}', producer='{wine.producer if hasattr(wine, 'producer') else 'N/A'}')"
+                        f"(name='{wine.name}', producer='{wine.producer if hasattr(wine, 'producer') else 'N/A'}, "
+                        f"vintage={wine.vintage if hasattr(wine, 'vintage') else 'N/A'}, "
+                        f"quantity={wine.quantity if hasattr(wine, 'quantity') else 'N/A'})"
                     )
                 else:
                     # Primo vino con questa combinazione - mantieni
