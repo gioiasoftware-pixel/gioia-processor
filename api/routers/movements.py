@@ -452,5 +452,28 @@ async def process_movement(
         raise
     except Exception as e:
         logger.error(f"Error creating movement job: {e}", exc_info=True)
+        
+        # Notifica admin per errore creazione job movimento
+        try:
+            from admin_notifications import enqueue_admin_notification
+            
+            await enqueue_admin_notification(
+                event_type="error",
+                telegram_id=telegram_id,
+                payload={
+                    "business_name": business_name,
+                    "error_type": "movement_job_creation_error",
+                    "error_message": str(e),
+                    "error_code": "MOVEMENT_JOB_CREATION_ERROR",
+                    "component": "gioia-processor",
+                    "movement_type": movement_type,
+                    "wine_name": wine_name,
+                    "quantity": quantity
+                },
+                correlation_id=None
+            )
+        except Exception as notif_error:
+            logger.warning(f"Errore invio notifica admin: {notif_error}")
+        
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
