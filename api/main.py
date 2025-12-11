@@ -15,6 +15,7 @@ from sqlalchemy import select
 from core.config import get_config, validate_config
 from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables, AsyncSessionLocal
 from core.logger import setup_colored_logging
+from core.scheduler import start_scheduler, shutdown_scheduler
 from api.routers import ingest, snapshot
 from api.routers import movements, diagnostics, admin
 from ingest.learned_terms_manager import load_learned_terms_set, load_learned_terms_dict
@@ -76,9 +77,25 @@ async def startup_event():
             logger.info("OpenAI API key configured - AI features enabled")
         else:
             logger.warning("OpenAI API key not found - AI features disabled")
+        
+        # Avvia scheduler per task periodici (report giornalieri)
+        try:
+            start_scheduler()
+        except Exception as scheduler_error:
+            logger.warning(f"Error starting scheduler (continuing anyway): {scheduler_error}")
             
     except Exception as e:
         logger.error(f"Error during startup: {e}", exc_info=True)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup al shutdown del server"""
+    try:
+        shutdown_scheduler()
+        logger.info("Scheduler fermato durante shutdown")
+    except Exception as e:
+        logger.warning(f"Error during scheduler shutdown: {e}")
 
 
 @app.get("/health")
