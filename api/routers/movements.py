@@ -107,6 +107,30 @@ async def process_movement_background(
                 job.error_message = err
                 job.completed_at = datetime.utcnow()
                 await db.commit()
+                
+                # Notifica admin per movimento fallito (vino non trovato)
+                try:
+                    from admin_notifications import enqueue_admin_notification
+                    
+                    await enqueue_admin_notification(
+                        event_type="error",
+                        telegram_id=telegram_id,
+                        payload={
+                            "business_name": business_name,
+                            "error_type": "movement_wine_not_found",
+                            "error_message": err,
+                            "error_code": "MOVEMENT_WINE_NOT_FOUND",
+                            "component": "gioia-processor",
+                            "movement_type": movement_type,
+                            "wine_name": wine_name,
+                            "quantity": quantity,
+                            "search_pattern": wine_name_pattern
+                        },
+                        correlation_id=job_id
+                    )
+                except Exception as notif_error:
+                    logger.warning(f"Errore invio notifica admin: {notif_error}")
+                
                 return
 
             # Accedi ai campi tramite chiavi (Row object)
@@ -135,6 +159,31 @@ async def process_movement_background(
                         job.error_message = error_msg
                         job.completed_at = datetime.utcnow()
                         await db.commit()
+                        
+                        # Notifica admin per movimento fallito (quantità insufficiente)
+                        try:
+                            from admin_notifications import enqueue_admin_notification
+                            
+                            await enqueue_admin_notification(
+                                event_type="error",
+                                telegram_id=telegram_id,
+                                payload={
+                                    "business_name": business_name,
+                                    "error_type": "movement_insufficient_quantity",
+                                    "error_message": error_msg,
+                                    "error_code": "MOVEMENT_INSUFFICIENT_QUANTITY",
+                                    "component": "gioia-processor",
+                                    "movement_type": movement_type,
+                                    "wine_name": wine_name_db,
+                                    "wine_id": wine_id,
+                                    "quantity_requested": quantity,
+                                    "quantity_available": quantity_before
+                                },
+                                correlation_id=job_id
+                            )
+                        except Exception as notif_error:
+                            logger.warning(f"Errore invio notifica admin: {notif_error}")
+                        
                         return
                     quantity_after = quantity_before - quantity
                 elif movement_type == 'rifornimento':
@@ -190,6 +239,30 @@ async def process_movement_background(
                     f"wine_name={wine_name}, movement_type={movement_type}, quantity={quantity} | Error: {str(te)}",
                     exc_info=True
                 )
+                
+                # Notifica admin per errore transazione movimento
+                try:
+                    from admin_notifications import enqueue_admin_notification
+                    
+                    await enqueue_admin_notification(
+                        event_type="error",
+                        telegram_id=telegram_id,
+                        payload={
+                            "business_name": business_name,
+                            "error_type": "movement_transaction_error",
+                            "error_message": str(te),
+                            "error_code": "MOVEMENT_TRANSACTION_ERROR",
+                            "component": "gioia-processor",
+                            "movement_type": movement_type,
+                            "wine_name": wine_name,
+                            "quantity": quantity,
+                            "wine_id": wine_id if 'wine_id' in locals() else None
+                        },
+                        correlation_id=job_id
+                    )
+                except Exception as notif_error:
+                    logger.warning(f"Errore invio notifica admin: {notif_error}")
+                
                 raise
 
             processing_time = (datetime.utcnow() - start_time).total_seconds()
