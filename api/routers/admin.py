@@ -272,10 +272,9 @@ async def admin_trigger_daily_report(
                     detail=f"Formato data non valido: {report_date}. Usa formato YYYY-MM-DD"
                 )
         else:
-            # Default: ieri
+            # Default: oggi (non ieri, perché l'utente vuole il report per la data corrente)
             now_italy = datetime.now(ITALY_TZ)
-            yesterday = now_italy - timedelta(days=1)
-            report_datetime = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+            report_datetime = now_italy.replace(hour=0, minute=0, second=0, microsecond=0)
         
         report_date_str = report_datetime.strftime("%Y-%m-%d")
         
