@@ -274,7 +274,10 @@ async def admin_trigger_daily_report(
         else:
             # Default: oggi (non ieri, perché l'utente vuole il report per la data corrente)
             now_italy = datetime.now(ITALY_TZ)
-            report_datetime = now_italy.replace(hour=0, minute=0, second=0, microsecond=0)
+            # Mantieni timezone awareness quando imposti a mezzanotte
+            report_datetime = ITALY_TZ.localize(
+                now_italy.replace(tzinfo=None).replace(hour=0, minute=0, second=0, microsecond=0)
+            )
         
         report_date_str = report_datetime.strftime("%Y-%m-%d")
         
