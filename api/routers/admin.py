@@ -15,10 +15,16 @@ from sqlalchemy import select, text as sql_text
 
 from core.database import get_db, User, ensure_user_tables, batch_insert_wines
 from core.logger import log_with_context
+from core.scheduler import generate_daily_movements_report, send_daily_reports_to_all_users
+from telegram_notifier import send_telegram_message
+from datetime import datetime, timedelta
+import pytz
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+ITALY_TZ = pytz.timezone('Europe/Rome')
 
 
 def _parse_int(value: Any) -> Optional[int]:
@@ -236,5 +242,184 @@ async def admin_insert_inventory(
         raise HTTPException(
             status_code=500,
             detail=f"Errore inserimento inventario: {str(e)}"
+        )
+
+
+@router.post("/trigger-daily-report")
+async def admin_trigger_daily_report(
+    telegram_id: Optional[int] = None,
+    report_date: Optional[str] = None,  # Formato: YYYY-MM-DD, default: ieri
+):
+    """
+    Endpoint admin per triggerare manualmente il report giornaliero.
+    
+    Args:
+        telegram_id: ID Telegram utente specifico (opzionale). Se None, invia a tutti.
+        report_date: Data del report in formato YYYY-MM-DD (opzionale). Default: ieri.
+    
+    Returns:
+        Dict con risultato invio report
+    """
+    try:
+        # Parse data report (default: ieri)
+        if report_date:
+            try:
+                report_datetime = datetime.strptime(report_date, "%Y-%m-%d")
+                report_datetime = ITALY_TZ.localize(report_datetime.replace(hour=0, minute=0, second=0, microsecond=0))
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Formato data non valido: {report_date}. Usa formato YYYY-MM-DD"
+                )
+        else:
+            # Default: ieri
+            now_italy = datetime.now(ITALY_TZ)
+            yesterday = now_italy - timedelta(days=1)
+            report_datetime = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        report_date_str = report_datetime.strftime("%Y-%m-%d")
+        
+        logger.info(
+            f"[ADMIN_REPORT] Trigger manuale report per data: {report_date_str}, "
+            f"telegram_id: {telegram_id if telegram_id else 'TUTTI'}"
+        )
+        
+        sent_count = 0
+        skipped_count = 0
+        error_count = 0
+        errors = []
+        
+        if telegram_id:
+            # Invia a un utente specifico
+            async for db in get_db():
+                stmt = select(User).where(User.telegram_id == telegram_id)
+                result = await db.execute(stmt)
+                user = result.scalar_one_or_none()
+                
+                if not user:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Utente {telegram_id} non trovato"
+                    )
+                
+                if not user.business_name:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Utente {telegram_id} senza business_name"
+                    )
+                
+                # Genera report
+                report = await generate_daily_movements_report(
+                    telegram_id=user.telegram_id,
+                    business_name=user.business_name,
+                    report_date=report_datetime
+                )
+                
+                if not report:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Errore generazione report per utente {telegram_id}"
+                    )
+                
+                # Invia report via Telegram
+                success = await send_telegram_message(
+                    telegram_id=user.telegram_id,
+                    message=report,
+                    parse_mode="Markdown"
+                )
+                
+                if success:
+                    sent_count = 1
+                    logger.info(
+                        f"[ADMIN_REPORT] Report inviato a {telegram_id}/{user.business_name}"
+                    )
+                else:
+                    error_count = 1
+                    errors.append(f"Errore invio a {telegram_id}")
+                    logger.warning(f"[ADMIN_REPORT] Errore invio report a {telegram_id}")
+        else:
+            # Invia a tutti gli utenti
+            async for db in get_db():
+                stmt = select(User).where(User.onboarding_completed == True)
+                result = await db.execute(stmt)
+                users = result.scalars().all()
+                
+                logger.info(f"[ADMIN_REPORT] Trovati {len(users)} utenti attivi")
+                
+                for user in users:
+                    try:
+                        if not user.business_name:
+                            logger.warning(
+                                f"[ADMIN_REPORT] Utente {user.telegram_id} senza business_name, skip"
+                            )
+                            skipped_count += 1
+                            continue
+                        
+                        # Genera report
+                        report = await generate_daily_movements_report(
+                            telegram_id=user.telegram_id,
+                            business_name=user.business_name,
+                            report_date=report_datetime
+                        )
+                        
+                        if not report:
+                            logger.warning(
+                                f"[ADMIN_REPORT] Errore generazione report per {user.telegram_id}, skip"
+                            )
+                            skipped_count += 1
+                            continue
+                        
+                        # Invia report via Telegram
+                        success = await send_telegram_message(
+                            telegram_id=user.telegram_id,
+                            message=report,
+                            parse_mode="Markdown"
+                        )
+                        
+                        if success:
+                            sent_count += 1
+                            logger.info(
+                                f"[ADMIN_REPORT] Report inviato a {user.telegram_id}/{user.business_name}"
+                            )
+                        else:
+                            error_count += 1
+                            errors.append(f"Errore invio a {user.telegram_id}")
+                            logger.warning(
+                                f"[ADMIN_REPORT] Errore invio report a {user.telegram_id}"
+                            )
+                        
+                        # Piccola pausa tra invii per evitare rate limiting
+                        import asyncio
+                        await asyncio.sleep(0.5)
+                        
+                    except Exception as e:
+                        error_count += 1
+                        errors.append(f"Errore processamento {user.telegram_id}: {str(e)[:100]}")
+                        logger.error(
+                            f"[ADMIN_REPORT] Errore processamento utente {user.telegram_id}: {e}",
+                            exc_info=True
+                        )
+                        continue
+        
+        return {
+            "status": "success",
+            "report_date": report_date_str,
+            "telegram_id": telegram_id,
+            "sent_count": sent_count,
+            "skipped_count": skipped_count,
+            "error_count": error_count,
+            "errors": errors[:10]  # Max 10 errori nel response
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"[ADMIN_REPORT] Errore trigger report: {e}",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Errore trigger report: {str(e)}"
         )
 
