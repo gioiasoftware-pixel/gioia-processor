@@ -22,3 +22,11 @@ def pick_better(a: FieldVal, b: FieldVal) -> FieldVal:
     except ValueError:
         return a
 
+
+
+
+
+
+
+
+

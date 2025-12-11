@@ -19,3 +19,11 @@ Regole output:
 - Una colonna può essere associata ad al massimo un field target. Non assegnare lo stesso field a colonne diverse.
 - Valori di "confidence" devono essere compresi tra 0.0 e 1.0.
 - Non restituire testo fuori dal JSON.
+
+
+
+
+
+
+
+

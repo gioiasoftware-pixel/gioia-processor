@@ -22,3 +22,11 @@ def reset() -> None:  # pragma: no cover - usato in test manuali
     with _LOCK:
         _COUNTER.clear()
 
+
+
+
+
+
+
+
+

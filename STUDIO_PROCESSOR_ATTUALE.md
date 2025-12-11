@@ -179,3 +179,11 @@
 Il processor attuale è completo e resiliente: accetta quasi ogni formato, automatizza estrazione e arricchimento, e mantiene logging dettagliato. I punti deboli sono concentrati nella normalizzazione Stage 1 (troppo invasiva), nell’identità produttore/fornitore e nell’elevato costo Stage 3. Le ottimizzazioni immediate possono inserirsi nell’architettura esistente mediante feature flag, safe mode e controlli mirati senza riscrivere l’orchestratore.
 
 
+
+
+
+
+
+
+
+

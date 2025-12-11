@@ -41,3 +41,11 @@ def test_header_mapping_synonyms():
 def test_supplier_resolver_classifies_known_supplier():
     value = "Pellegrini S.p.A."
     assert classify_party(value) == "supplier"
+
+
+
+
+
+
+
+
