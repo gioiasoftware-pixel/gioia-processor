@@ -83,8 +83,12 @@ processed_files/
 temp_files/
 screenshots/
 
-# Documentazione (mantieni README)
+# Documentazione (mantieni README e file essenziali)
 *.md
 !README.md
+!ADMIN_INSERT_INVENTORY.md
+!REPORT_GIORNALIERO_AUTOMATICO.md
+!VARIABILI_AMBIENTE_RAILWAY.md
+!CONFIGURAZIONE_PERMISSIVA_BETA_TESTER.md
 
 

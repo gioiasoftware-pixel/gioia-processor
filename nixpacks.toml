@@ -1,9 +1,10 @@
 [phases.setup]
-nixPkgs = ["python3", "postgresql_16.dev", "poppler_utils", "gcc"]
+nixPkgs = ["python3", "postgresql_16.dev", "poppler_utils", "tesseract", "gcc"]
 
 [phases.install]
 cmds = [
   "python -m venv /opt/venv",
+  "/opt/venv/bin/python -m pip install --upgrade pip --no-cache-dir",
   "/opt/venv/bin/python -m pip install --no-cache-dir -r requirements.txt"
 ]
 
