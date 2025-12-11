@@ -66,11 +66,23 @@ async def generate_daily_movements_report(
             user_tables = await ensure_user_tables(session, telegram_id, business_name)
             table_consumi = user_tables["consumi"]
             
-            # Calcola range giornata precedente (00:00 - 23:59 ora italiana)
-            start_of_day = report_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_of_day = report_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+            # Calcola range giornata (00:00 - 23:59 ora italiana)
+            # IMPORTANTE: Converti in UTC per confronto con CURRENT_TIMESTAMP del database
+            start_of_day_italy = report_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day_italy = report_date.replace(hour=23, minute=59, second=59, microsecond=999999)
             
-            # Query movimenti del giorno precedente
+            # Converti in UTC per confronto con timestamp del database
+            start_of_day_utc = start_of_day_italy.astimezone(pytz.UTC).replace(tzinfo=None)
+            end_of_day_utc = end_of_day_italy.astimezone(pytz.UTC).replace(tzinfo=None)
+            
+            logger.info(
+                f"[DAILY_REPORT] Cercando movimenti per {telegram_id} tra "
+                f"{start_of_day_italy.strftime('%Y-%m-%d %H:%M:%S %Z')} e "
+                f"{end_of_day_italy.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+                f"(UTC: {start_of_day_utc} - {end_of_day_utc})"
+            )
+            
+            # Query movimenti del giorno
             query_movements = sql_text(f"""
                 SELECT 
                     wine_name,
@@ -89,10 +101,15 @@ async def generate_daily_movements_report(
             
             result = await session.execute(query_movements, {
                 "user_id": user.id,
-                "start_date": start_of_day,
-                "end_date": end_of_day
+                "start_date": start_of_day_utc,
+                "end_date": end_of_day_utc
             })
             movements = result.fetchall()
+            
+            logger.info(
+                f"[DAILY_REPORT] Trovati {len(movements)} movimenti per {telegram_id} "
+                f"per data {report_date.strftime('%Y-%m-%d')}"
+            )
             
             if not movements:
                 # Nessun movimento, genera messaggio informativo
