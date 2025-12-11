@@ -1,0 +1,65 @@
+# Railway ignore file - esclude file dal build snapshot
+# Simile a .gitignore ma specifico per Railway
+
+# Docker files (usiamo Nixpacks)
+Dockerfile*
+*.dockerfile
+.dockerignore
+
+# Test files
+tests/
+.pytest_cache/
+coverage/
+
+# Documentation
+report/
+docs/
+*.md
+!README.md
+!ADMIN_INSERT_INVENTORY.md
+!REPORT_GIORNALIERO_AUTOMATICO.md
+!VARIABILI_AMBIENTE_RAILWAY.md
+!CONFIGURAZIONE_PERMISSIVA_BETA_TESTER.md
+
+# Development files
+.env
+.env.local
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+uploads/
+processed_files/
+temp_files/
+screenshots/
+
+# Railway
+.railway/
+
