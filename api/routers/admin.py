@@ -248,20 +248,20 @@ async def admin_insert_inventory(
 @router.post("/trigger-daily-report")
 async def admin_trigger_daily_report(
     telegram_id: Optional[int] = None,
-    report_date: Optional[str] = None,  # Formato: YYYY-MM-DD, default: ieri
+    report_date: Optional[str] = None,  # Formato: YYYY-MM-DD, default: oggi
 ):
     """
     Endpoint admin per triggerare manualmente il report giornaliero.
     
     Args:
         telegram_id: ID Telegram utente specifico (opzionale). Se None, invia a tutti.
-        report_date: Data del report in formato YYYY-MM-DD (opzionale). Default: ieri.
+        report_date: Data del report in formato YYYY-MM-DD (opzionale). Default: oggi.
     
     Returns:
         Dict con risultato invio report
     """
     try:
-        # Parse data report (default: ieri)
+        # Parse data report (default: oggi)
         if report_date:
             try:
                 report_datetime = datetime.strptime(report_date, "%Y-%m-%d")
