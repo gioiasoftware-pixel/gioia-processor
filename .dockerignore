@@ -69,6 +69,10 @@ tmp/
 # Railway
 .railway/
 
+# Dockerfile (usiamo Nixpacks invece)
+Dockerfile
+Dockerfile.backup
+
 # Test artifacts / docs non necessari in produzione
 .pytest_cache/
 coverage/
