@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from rapidfuzz import fuzz
-from scipy.optimize import linear_sum_assignment
 
 from core.config import ProcessorConfig, get_config
 from core.logger import log_json
@@ -155,7 +154,9 @@ def map_headers_v2(columns: List[str], cfg: ProcessorConfig) -> Dict[str, Dict[s
             scores[i, j] = score
             cost[i, j] = 1.0 - score
 
-    row_ind, col_ind = linear_sum_assignment(cost)
+    # Algoritmo greedy per matching header (sostituisce linear_sum_assignment)
+    # Più veloce e non richiede scipy (~100 MB in meno)
+    row_ind, col_ind = _greedy_assignment(cost, scores, m, n)
     mapping: Dict[str, Dict[str, Any]] = {}
 
     for r, c in zip(row_ind, col_ind):
@@ -197,6 +198,73 @@ def map_headers_v2(columns: List[str], cfg: ProcessorConfig) -> Dict[str, Dict[s
                 break
 
     return mapping
+
+
+def _greedy_assignment(cost: np.ndarray, scores: np.ndarray, m: int, n: int) -> Tuple[List[int], List[int]]:
+    """
+    Algoritmo greedy per matching header (sostituisce scipy.optimize.linear_sum_assignment).
+    
+    Per ogni colonna, trova il campo con score migliore che non è già stato assegnato.
+    Questo è più veloce di linear_sum_assignment e non richiede scipy.
+    
+    Args:
+        cost: Matrice costi (non usata, mantenuta per compatibilità)
+        scores: Matrice scores (m x n)
+        m: Numero colonne
+        n: Numero campi target
+    
+    Returns:
+        Tuple (row_ind, col_ind) come linear_sum_assignment
+    """
+    row_ind = []
+    col_ind = []
+    used_cols = set()
+    
+    # Ordina colonne per miglior score disponibile
+    column_scores = []
+    for i in range(m):
+        best_score = -1
+        best_j = -1
+        for j in range(n):
+            if j not in used_cols and scores[i, j] > best_score:
+                best_score = scores[i, j]
+                best_j = j
+        column_scores.append((i, best_j, best_score))
+    
+    # Ordina per score decrescente e assegna
+    column_scores.sort(key=lambda x: x[2], reverse=True)
+    
+    for i, j, score in column_scores:
+        if j not in used_cols and j >= 0:
+            row_ind.append(i)
+            col_ind.append(j)
+            used_cols.add(j)
+    
+    # Aggiungi colonne non assegnate
+    for i in range(m):
+        if i not in row_ind:
+            row_ind.append(i)
+            # Trova campo non usato con score migliore
+            best_j = -1
+            best_score = -1
+            for j in range(n):
+                if j not in used_cols and scores[i, j] > best_score:
+                    best_score = scores[i, j]
+                    best_j = j
+            if best_j >= 0:
+                col_ind.append(best_j)
+                used_cols.add(best_j)
+            else:
+                # Assegna a campo non usato qualsiasi
+                for j in range(n):
+                    if j not in used_cols:
+                        col_ind.append(j)
+                        used_cols.add(j)
+                        break
+                else:
+                    col_ind.append(0)  # Fallback
+    
+    return row_ind, col_ind
 
 
 def _resolve_field_column(mapping: Dict[str, Dict[str, Any]], field: str) -> Optional[str]:

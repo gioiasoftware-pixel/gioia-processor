@@ -1,5 +1,7 @@
 [phases.setup]
-nixPkgs = ["python3", "postgresql_16.dev", "poppler_utils", "tesseract", "gcc"]
+# Rimossi postgresql_16.dev (non necessario, usiamo psycopg2-binary)
+# Rimossi gcc (non necessario per binary wheels)
+nixPkgs = ["python3", "poppler_utils", "tesseract"]
 
 [phases.install]
 cmds = [
