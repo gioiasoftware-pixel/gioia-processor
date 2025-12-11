@@ -135,7 +135,8 @@ async def health_check():
                 "process_movement": "/process-movement",
                 "status": "/status/{job_id}",
                 "snapshot": "/api/inventory/snapshot",
-                "export": "/api/inventory/export.csv"
+                "export": "/api/inventory/export.csv",
+                "admin_trigger_report": "/admin/trigger-daily-report"
             }
         }
         
