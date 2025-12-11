@@ -31,7 +31,21 @@ setup_colored_logging("admin_insert")
 logger = logging.getLogger(__name__)
 
 # URL default processor (può essere sovrascritto con --processor-url o PROCESSOR_URL env)
-DEFAULT_PROCESSOR_URL = os.getenv("PROCESSOR_URL", "http://localhost:8001")
+def _normalize_url(url: str) -> str:
+    """Normalizza URL aggiungendo http:// o https:// se manca il protocollo"""
+    if not url:
+        return "http://localhost:8001"
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        # Per localhost usa http, per altri usa https
+        if "localhost" in url or "127.0.0.1" in url:
+            url = f"http://{url}"
+        else:
+            url = f"https://{url}"
+    return url
+
+DEFAULT_PROCESSOR_URL_RAW = os.getenv("PROCESSOR_URL", "http://localhost:8001")
+DEFAULT_PROCESSOR_URL = _normalize_url(DEFAULT_PROCESSOR_URL_RAW)
 
 
 async def call_admin_api(
