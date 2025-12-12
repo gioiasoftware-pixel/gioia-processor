@@ -136,7 +136,8 @@ async def health_check():
                 "status": "/status/{job_id}",
                 "snapshot": "/api/inventory/snapshot",
                 "export": "/api/inventory/export.csv",
-                "admin_trigger_report": "/admin/trigger-daily-report"
+                "admin_trigger_report": "/admin/trigger-daily-report",
+                "admin_update_wine_field": "/admin/update-wine-field"
             }
         }
         

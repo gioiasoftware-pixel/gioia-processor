@@ -570,3 +570,124 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
             detail=f"Errore inserimento inventario: {str(e)}"
         )
 
+
+@router.post("/update-wine-field")
+async def update_wine_field(
+    telegram_id: int = Form(...),
+    business_name: str = Form(...),
+    wine_id: int = Form(...),
+    field: str = Form(...),
+    value: str = Form(...)
+):
+    """
+    Aggiorna un singolo campo per un vino dell'inventario utente.
+    Campi supportati: producer, supplier, vintage, grape_variety, classification, 
+    selling_price, cost_price, alcohol_content, description, notes
+    """
+    try:
+        allowed_fields = {
+            'producer': 'producer',
+            'supplier': 'supplier',
+            'vintage': 'vintage',
+            'grape_variety': 'grape_variety',
+            'classification': 'classification',
+            'selling_price': 'selling_price',
+            'cost_price': 'cost_price',
+            'alcohol_content': 'alcohol_content',
+            'description': 'description',
+            'notes': 'notes',
+        }
+        
+        if field not in allowed_fields:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Campo non consentito: {field}. Campi supportati: {', '.join(allowed_fields.keys())}"
+            )
+        
+        # Normalizza tipi per alcuni campi
+        def cast_value(f: str, v: str):
+            if f == 'vintage':
+                try:
+                    parsed = int(v)
+                    if parsed < 1800 or parsed > 2100:
+                        raise HTTPException(status_code=400, detail=f"Anno non valido: {parsed}")
+                    return parsed
+                except (ValueError, TypeError):
+                    raise HTTPException(status_code=400, detail=f"Anno non valido per {f}: '{v}'")
+            if f in ('selling_price', 'cost_price', 'alcohol_content'):
+                try:
+                    parsed = float(str(v).replace(',', '.'))
+                    if f == 'alcohol_content' and (parsed < 0 or parsed > 100):
+                        raise HTTPException(status_code=400, detail=f"Gradazione alcolica non valida: {parsed}%")
+                    if f in ('selling_price', 'cost_price') and parsed < 0:
+                        raise HTTPException(status_code=400, detail=f"Prezzo non può essere negativo: {parsed}")
+                    return parsed
+                except (ValueError, TypeError):
+                    raise HTTPException(status_code=400, detail=f"Numero non valido per {f}: '{v}'")
+            # Per stringhe, rimuovi spazi eccessivi
+            return str(v).strip() if v else None
+        
+        column = allowed_fields[field]
+        new_value = cast_value(field, value)
+        
+        async for db in get_db():
+            # Verifica utente
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
+            
+            # Assicura esistenza tabelle
+            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            table_inventario = user_tables["inventario"]
+            
+            # Verifica che il vino esista
+            check_wine = sql_text(f"""
+                SELECT id FROM {table_inventario}
+                WHERE id = :wine_id AND user_id = :user_id
+            """)
+            wine_check = await db.execute(check_wine, {"wine_id": wine_id, "user_id": user.id})
+            if not wine_check.fetchone():
+                raise HTTPException(status_code=404, detail=f"Vino con id {wine_id} non trovato")
+            
+            # Aggiorna campo
+            update_stmt = sql_text(f"""
+                UPDATE {table_inventario}
+                SET {column} = :val, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :wine_id AND user_id = :user_id
+                RETURNING id
+            """)
+            result = await db.execute(update_stmt, {"val": new_value, "wine_id": wine_id, "user_id": user.id})
+            updated = result.scalar_one_or_none()
+            
+            if not updated:
+                await db.rollback()
+                raise HTTPException(status_code=404, detail="Vino non trovato dopo aggiornamento")
+            
+            await db.commit()
+            
+            log_with_context(
+                "info",
+                f"[UPDATE_WINE_FIELD] Campo aggiornato: {field} = {new_value} per wine_id={wine_id}",
+                telegram_id=telegram_id
+            )
+            
+            return {
+                "status": "success",
+                "wine_id": wine_id,
+                "field": field,
+                "value": new_value,
+                "message": f"Campo {field} aggiornato con successo"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[UPDATE_WINE_FIELD] Errore aggiornamento campo vino: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Errore interno durante aggiornamento: {str(e)}"
+        )
+
