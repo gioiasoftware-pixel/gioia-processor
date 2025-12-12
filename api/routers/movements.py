@@ -137,24 +137,39 @@ async def process_movement_background(
                     END ASC, name ASC
                 """
             
+            # Costruisci condizioni WHERE con varianti plurali
+            where_conditions = [
+                "LOWER(name) LIKE LOWER(:wine_name_pattern)",
+                "LOWER(producer) LIKE LOWER(:wine_name_pattern)",
+                "LOWER(grape_variety) LIKE LOWER(:wine_name_pattern)"
+            ]
+            
+            # Aggiungi condizioni per varianti plurali (es. "vermentini" -> "vermentino")
+            params_dict = {
+                "user_id": user.id,
+                "wine_name_pattern": wine_name_pattern
+            }
+            
+            for idx, variant in enumerate(search_variants[1:], start=1):  # Skip primo (originale)
+                variant_pattern = f"%{variant}%"
+                param_key = f"wine_name_variant_{idx}"
+                where_conditions.extend([
+                    f"LOWER(name) LIKE LOWER(:{param_key})",
+                    f"LOWER(grape_variety) LIKE LOWER(:{param_key})"
+                ])
+                params_dict[param_key] = variant_pattern
+            
             search_wine = sql_text(f"""
                 SELECT id, name, producer, quantity 
                 FROM {table_inventario} 
                 WHERE user_id = :user_id 
-                AND (
-                    LOWER(name) LIKE LOWER(:wine_name_pattern)
-                    OR LOWER(producer) LIKE LOWER(:wine_name_pattern)
-                    OR LOWER(grape_variety) LIKE LOWER(:wine_name_pattern)
-                )
+                AND ({' OR '.join(where_conditions)})
                 ORDER BY {order_by_clause}
                 FOR UPDATE  -- ✅ LOCK row per serializzare accessi
                 LIMIT 1
             """)
             
-            res = await db.execute(search_wine, {
-                "user_id": user.id,
-                "wine_name_pattern": wine_name_pattern
-            })
+            res = await db.execute(search_wine, params_dict)
             wine_row = res.fetchone()
 
             if not wine_row:
