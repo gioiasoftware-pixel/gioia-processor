@@ -434,6 +434,7 @@ class InsertInventoryJSONRequest(BaseModel):
     business_name: str
     file_content_base64: str  # CSV content in base64
     mode: str = "add"  # "add" o "replace"
+    source: str = "admin_bot"  # Fonte: "admin_bot", "admin_script", etc.
 
 
 @router.post("/insert-inventory-json")
@@ -481,7 +482,14 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
         
         # Usa la stessa logica dell'endpoint multipart
         async for db in get_db():
-            # Crea/verifica utente e tabelle
+            # Crea/verifica utente e tabelle (crea automaticamente se non esistono)
+            log_with_context(
+                "info",
+                f"[ADMIN_INSERT_JSON] Creazione/verifica tabelle per utente {request.telegram_id}/{request.business_name}",
+                telegram_id=request.telegram_id,
+                correlation_id=correlation_id
+            )
+            
             user_tables = await ensure_user_tables(db, request.telegram_id, request.business_name)
             table_inventario = user_tables["inventario"]
             
@@ -540,6 +548,7 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
                 "telegram_id": request.telegram_id,
                 "business_name": request.business_name,
                 "mode": request.mode,
+                "source": request.source,
                 "total_wines": len(wines),
                 "saved_wines": saved_count,  # Compatibile con endpoint multipart
                 "error_count": error_count,

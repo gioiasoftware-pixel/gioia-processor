@@ -89,7 +89,8 @@ async def call_admin_api(
         'telegram_id': telegram_id,
         'business_name': business_name,
         'file_content_base64': file_content_b64,
-        'mode': mode
+        'mode': mode,
+        'source': 'admin_script'  # Indica che arriva dallo script admin
     }
     
     logger.info(f"Chiamata API admin (JSON): {url_json}")
