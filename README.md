@@ -274,5 +274,6 @@ python start_processor.py
 
 **Versione**: 2.0.0  
 **Data**: 2025-01-XX
- 
+
+ 
  
