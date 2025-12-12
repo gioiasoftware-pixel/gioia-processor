@@ -137,6 +137,28 @@ async def process_movement_background(
                     END ASC, name ASC
                 """
             
+            # Funzione per normalizzare plurali italiani per uvaggi e nomi
+            # Es: "vermentini" -> "vermentino", "spumanti" -> "spumante"
+            def normalize_plural_for_search(term: str) -> list[str]:
+                """Ritorna lista di varianti: originale, senza plurale, con -o finale (per maschili)"""
+                variants = [term]
+                if len(term) > 2:
+                    if term.endswith('i'):
+                        # Plurale maschile: "vermentini" -> "vermentino"
+                        base = term[:-1]
+                        variants.append(base + 'o')  # vermentino
+                        variants.append(base)  # vermentin (match parziale)
+                    elif term.endswith('e'):
+                        # Plurale femminile o altro: "bianche" -> "bianco"
+                        base = term[:-1]
+                        variants.append(base + 'a')  # bianca
+                        variants.append(base + 'o')  # bianco
+                        variants.append(base)  # bianch
+                return list(set(variants))  # Rimuovi duplicati
+            
+            # Genera varianti plurali del nome vino
+            search_variants = normalize_plural_for_search(wine_name_lower)
+            
             # Costruisci condizioni WHERE con varianti plurali
             where_conditions = [
                 "LOWER(name) LIKE LOWER(:wine_name_pattern)",
