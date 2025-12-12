@@ -72,11 +72,70 @@ async def process_movement_background(
             # ✅ TRANSACTIONE ATOMICA con FOR UPDATE per evitare race condition (come vecchia versione)
             # Cerca vino nell'inventario con FOR UPDATE (lock riga) - inizia transazione
             wine_name_pattern = f"%{wine_name}%"
+            wine_name_lower = wine_name.strip().lower()
+            
+            # Determina se il termine è probabilmente un nome di uvaggio
+            # Lista di uvaggi italiani e internazionali comuni
+            common_grape_varieties = {
+                'vermentino', 'nero', 'davola', 'nero d\'avola', 'nerodavola',
+                'sangiovese', 'montepulciano', 'barbera', 'nebbiolo', 'dolcetto',
+                'pinot', 'pinot grigio', 'pinot nero', 'pinot bianco',
+                'chardonnay', 'sauvignon', 'cabernet', 'merlot', 'syrah', 'shiraz',
+                'prosecco', 'glera', 'moscato', 'corvina', 'rondinella',
+                'garganega', 'trebbiano', 'malvasia', 'canaiolo', 'colorino',
+                'fiano', 'greco', 'falanghina', 'aglianico', 'primitivo', 'negroamaro',
+                'frapatto', 'nerello', 'carricante', 'catarratto', 'inzolia',
+                'gewurztraminer', 'gewurtzraminer', 'riesling', 'traminer',
+                'garnacha', 'tempranillo', 'grenache', 'mourvedre'
+            }
+            # Normalizza il termine per confronto (rimuovi apostrofi/spazi)
+            wine_name_normalized = wine_name_lower.replace(' ', '').replace('\'', '').replace('-', '')
+            is_likely_grape_variety = (
+                wine_name_lower in common_grape_varieties or 
+                wine_name_normalized in common_grape_varieties or
+                any(gv in wine_name_lower for gv in common_grape_varieties if len(gv) >= 6)
+            )
+            
+            # Determina se è un produttore (es. "ca del bosco")
+            is_likely_producer = any(word in wine_name_lower for word in [' del ', ' di ', ' da ', 'ca ', 'ca\'', 'castello', 'tenuta', 'azienda'])
             
             logger.info(
                 f"[MOVEMENT] Job {job_id}: Cercando vino '{wine_name}' (pattern: '{wine_name_pattern}') "
-                f"per user_id={user.id} in tabella {table_inventario}"
+                f"per user_id={user.id} in tabella {table_inventario} | "
+                f"is_likely_grape_variety={is_likely_grape_variety}, is_likely_producer={is_likely_producer}"
             )
+            
+            # Costruisci ORDER BY con priorità in base al tipo di ricerca
+            if is_likely_producer:
+                # Per produttori, producer ha priorità più alta
+                order_by_clause = """
+                    CASE 
+                        WHEN LOWER(producer) LIKE LOWER(:wine_name_pattern) THEN 1
+                        WHEN LOWER(name) LIKE LOWER(:wine_name_pattern) THEN 2
+                        WHEN LOWER(grape_variety) LIKE LOWER(:wine_name_pattern) THEN 3
+                        ELSE 4
+                    END ASC, name ASC
+                """
+            elif is_likely_grape_variety:
+                # Per uvaggi, grape_variety ha priorità più alta rispetto a name
+                order_by_clause = """
+                    CASE 
+                        WHEN LOWER(grape_variety) LIKE LOWER(:wine_name_pattern) THEN 1
+                        WHEN LOWER(producer) LIKE LOWER(:wine_name_pattern) THEN 2
+                        WHEN LOWER(name) LIKE LOWER(:wine_name_pattern) THEN 3
+                        ELSE 4
+                    END ASC, name ASC
+                """
+            else:
+                # Per altri, name ha priorità più alta
+                order_by_clause = """
+                    CASE 
+                        WHEN LOWER(name) LIKE LOWER(:wine_name_pattern) THEN 1
+                        WHEN LOWER(producer) LIKE LOWER(:wine_name_pattern) THEN 2
+                        WHEN LOWER(grape_variety) LIKE LOWER(:wine_name_pattern) THEN 3
+                        ELSE 4
+                    END ASC, name ASC
+                """
             
             search_wine = sql_text(f"""
                 SELECT id, name, producer, quantity 
@@ -87,6 +146,7 @@ async def process_movement_background(
                     OR LOWER(producer) LIKE LOWER(:wine_name_pattern)
                     OR LOWER(grape_variety) LIKE LOWER(:wine_name_pattern)
                 )
+                ORDER BY {order_by_clause}
                 FOR UPDATE  -- ✅ LOCK row per serializzare accessi
                 LIMIT 1
             """)
