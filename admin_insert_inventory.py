@@ -232,7 +232,7 @@ async def main():
     """Main entry point."""
     if len(sys.argv) < 4:
         print(__doc__)
-        print("\n❌ Errore: Parametri mancanti")
+        print("\nERRORE: Parametri mancanti")
         print("\nUso:")
         print("  python admin_insert_inventory.py <telegram_id> <business_name> <file_csv> [--replace] [--processor-url URL]")
         print("\nEsempio:")
@@ -256,7 +256,7 @@ async def main():
             if idx + 1 < len(sys.argv):
                 processor_url = sys.argv[idx + 1]
             else:
-                print("❌ Errore: --processor-url richiede un URL")
+                print("ERRORE: --processor-url richiede un URL")
                 sys.exit(1)
         
         logger.info("=" * 60)
@@ -278,12 +278,12 @@ async def main():
         )
         
         print("\n" + "=" * 60)
-        print("✅ INSERIMENTO COMPLETATO")
+        print("INSERIMENTO COMPLETATO")
         print("=" * 60)
         print(f"Vini salvati: {saved_count}")
         print(f"Errori: {error_count}")
         print("=" * 60)
-        print("\n💡 Nota: Il processor ha creato automaticamente tutte le tabelle necessarie:")
+        print("\nNOTA: Il processor ha creato automaticamente tutte le tabelle necessarie:")
         print("   - INVENTARIO")
         print("   - BACKUP")
         print("   - LOG")
@@ -309,8 +309,8 @@ async def main():
         sys.exit(1)
     except Exception as e:
         logger.error(f"Errore generico: {e}", exc_info=True)
-        print(f"\n❌ Errore: {e}")
-        print("\n💡 Suggerimenti:")
+        print(f"\nERRORE: {e}")
+        print("\nSUGGERIMENTI:")
         print("   1. Verifica che il processor sia in esecuzione")
         print(f"   2. Verifica che l'URL sia corretto: {processor_url}")
         print("   3. Controlla i log del processor per dettagli")
