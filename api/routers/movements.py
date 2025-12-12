@@ -157,7 +157,7 @@ async def process_movement_background(
                 return list(set(variants))  # Rimuovi duplicati
             
             # Genera varianti plurali del nome vino
-            search_variants = normalize_plural_for_search(wine_name_lower)
+            search_variants = normalize_plural_for_search(wine_name_lower)  # Fix: definito prima dell'uso
             
             # Costruisci condizioni WHERE con varianti plurali
             where_conditions = [
