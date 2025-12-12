@@ -105,7 +105,7 @@ def parse_csv_content(csv_content: bytes) -> List[Dict[str, Any]]:
             wines.append(wine)
             
         except Exception as e:
-            logger.error(f"Errore parsing riga {row_num}: {e}")
+            logger.error(f"Errore parsing riga {row_num}: {e}", exc_info=True)
             continue
     
     return wines
@@ -340,7 +340,7 @@ async def admin_trigger_daily_report(
                 else:
                     error_count = 1
                     errors.append(f"Errore invio a {telegram_id}")
-                    logger.warning(f"[ADMIN_REPORT] Errore invio report a {telegram_id}")
+                    logger.warning(f"[ADMIN_REPORT] Errore invio report a {telegram_id}", exc_info=True)
         else:
             # Invia a tutti gli utenti
             async for db in get_db():

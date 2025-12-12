@@ -227,7 +227,7 @@ async def process_movement_background(
                         correlation_id=job_id
                     )
                 except Exception as notif_error:
-                    logger.warning(f"Errore invio notifica admin: {notif_error}")
+                    logger.warning(f"Errore invio notifica admin: {notif_error}", exc_info=True)
                 
                 return
 
@@ -280,7 +280,7 @@ async def process_movement_background(
                                 correlation_id=job_id
                             )
                         except Exception as notif_error:
-                            logger.warning(f"Errore invio notifica admin: {notif_error}")
+                            logger.warning(f"Errore invio notifica admin: {notif_error}", exc_info=True)
                         
                         return
                     quantity_after = quantity_before - quantity
@@ -359,7 +359,7 @@ async def process_movement_background(
                         correlation_id=job_id
                     )
                 except Exception as notif_error:
-                    logger.warning(f"Errore invio notifica admin: {notif_error}")
+                    logger.warning(f"Errore invio notifica admin: {notif_error}", exc_info=True)
                 
                 raise
 
@@ -434,8 +434,8 @@ async def process_movement_background(
                 job.completed_at = datetime.utcnow()
                 await db.commit()
                 break
-        except Exception:
-            pass
+        except Exception as update_error:
+            logger.error(f"[MOVEMENT] Errore aggiornamento job {job_id} a status 'error': {update_error}", exc_info=True)
 
 
 @router.post("/process-movement")

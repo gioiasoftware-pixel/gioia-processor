@@ -148,7 +148,7 @@ async def process_inventory_background(
                             correlation_id=correlation_id
                         )
                     except Exception as notif_error:
-                        logger.warning(f"Errore invio notifica admin: {notif_error}")
+                        logger.warning(f"Errore invio notifica admin: {notif_error}", exc_info=True)
                     
                     return
                 
@@ -252,7 +252,7 @@ async def process_inventory_background(
                             correlation_id=correlation_id
                         )
                     except Exception as notif_error:
-                        logger.warning(f"Errore invio notifica admin: {notif_error}")
+                        logger.warning(f"Errore invio notifica admin: {notif_error}", exc_info=True)
                     
                     return
                 
@@ -395,6 +395,7 @@ async def process_inventory_background(
                                 except Exception as notif_error:
                                     logger.warning(
                                         f"[POST_PROCESSING] Errore invio messaggio Telegram per duplicati: {notif_error}",
+                                        exc_info=True
                                         exc_info=True
                                     )
                     except Exception as post_error:
