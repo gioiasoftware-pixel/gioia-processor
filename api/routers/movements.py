@@ -85,6 +85,7 @@ async def process_movement_background(
                 AND (
                     LOWER(name) LIKE LOWER(:wine_name_pattern)
                     OR LOWER(producer) LIKE LOWER(:wine_name_pattern)
+                    OR LOWER(grape_variety) LIKE LOWER(:wine_name_pattern)
                 )
                 FOR UPDATE  -- ✅ LOCK row per serializzare accessi
                 LIMIT 1
