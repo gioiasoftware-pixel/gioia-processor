@@ -79,24 +79,55 @@ async def call_admin_api(
     
     file_name = Path(csv_file_path).name
     
-    # Prepara files e data
-    files = {
-        'file': (file_name, file_content, 'text/csv')
-    }
-    data = {
-        'telegram_id': str(telegram_id),
+    # Prova prima con endpoint JSON (bypass problemi multipart)
+    import base64
+    
+    url_json = f"{processor_url.rstrip('/')}/admin/insert-inventory-json"
+    file_content_b64 = base64.b64encode(file_content).decode('utf-8')
+    
+    json_data = {
+        'telegram_id': telegram_id,
         'business_name': business_name,
+        'file_content_base64': file_content_b64,
         'mode': mode
     }
     
-    # Chiama API admin
-    url = f"{processor_url.rstrip('/')}/admin/insert-inventory"
-    
-    logger.info(f"Chiamata API admin: {url}")
+    logger.info(f"Chiamata API admin (JSON): {url_json}")
     logger.info(f"Parametri: telegram_id={telegram_id}, business_name={business_name}, mode={mode}")
     
     timeout = httpx.Timeout(120.0)  # Timeout più lungo per inserimenti grandi
     async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            # Prova endpoint JSON
+            response = await client.post(url_json, json=json_data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result
+            elif response.status_code == 404:
+                # Endpoint JSON non esiste, fallback a multipart
+                logger.info("Endpoint JSON non disponibile, uso endpoint multipart")
+            else:
+                error_text = response.text
+                raise Exception(f"HTTP {response.status_code}: {error_text}")
+        except Exception as json_error:
+            logger.warning(f"Errore endpoint JSON, provo multipart: {json_error}")
+        
+        # Fallback a endpoint multipart originale
+        files = {
+            'file': (file_name, file_content, 'text/csv')
+        }
+        data = {
+            'telegram_id': str(telegram_id),
+            'business_name': business_name,
+            'mode': mode
+        }
+        
+        url = f"{processor_url.rstrip('/')}/admin/insert-inventory"
+        
+        logger.info(f"Chiamata API admin (multipart): {url}")
+        logger.info(f"Parametri: telegram_id={telegram_id}, business_name={business_name}, mode={mode}")
+        
         response = await client.post(url, files=files, data=data)
         
         if response.status_code != 200:
@@ -141,8 +172,12 @@ async def insert_inventory_via_processor(
             response = await client.get(health_url)
             if response.status_code != 200:
                 raise Exception(f"Processor non raggiungibile: HTTP {response.status_code}")
-            health = response.json()
-            logger.info(f"Processor health check: {health.get('status', 'unknown')}")
+            # Prova a parsare JSON, ma non fallire se non è JSON (alcuni server restituiscono HTML)
+            try:
+                health = response.json()
+                logger.info(f"Processor health check: {health.get('status', 'unknown')}")
+            except:
+                logger.info(f"Processor health check: HTTP {response.status_code} (risposta non JSON, ma OK)")
     except Exception as e:
         raise Exception(
             f"Impossibile raggiungere il processor all'URL {processor_url}. "

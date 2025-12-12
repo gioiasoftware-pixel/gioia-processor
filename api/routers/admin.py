@@ -10,7 +10,9 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, Body
+from pydantic import BaseModel
+import base64
 from sqlalchemy import select, text as sql_text
 
 from core.database import get_db, User, ensure_user_tables, batch_insert_wines
@@ -423,5 +425,139 @@ async def admin_trigger_daily_report(
         raise HTTPException(
             status_code=500,
             detail=f"Errore trigger report: {str(e)}"
+        )
+
+
+class InsertInventoryJSONRequest(BaseModel):
+    """Request model per inserimento inventario via JSON (bypass multipart)"""
+    telegram_id: int
+    business_name: str
+    file_content_base64: str  # CSV content in base64
+    mode: str = "add"  # "add" o "replace"
+
+
+@router.post("/insert-inventory-json")
+async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
+    """
+    Endpoint alternativo per inserire inventario via JSON (bypass problemi multipart).
+    
+    Questo endpoint accetta il contenuto CSV come stringa base64 invece di multipart form.
+    Utile quando ci sono problemi con l'ordine dei campi multipart.
+    """
+    correlation_id = f"admin_insert_{request.telegram_id}_{request.business_name}"
+    
+    try:
+        log_with_context(
+            "info",
+            f"[ADMIN_INSERT_JSON] Inizio inserimento inventario per {request.telegram_id}/{request.business_name}",
+            telegram_id=request.telegram_id,
+            correlation_id=correlation_id
+        )
+        
+        # Decodifica file CSV da base64
+        try:
+            file_content = base64.b64decode(request.file_content_base64)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Errore decodifica base64: {str(e)}"
+            )
+        
+        # Parse CSV
+        wines = parse_csv_content(file_content)
+        
+        if not wines:
+            raise HTTPException(
+                status_code=400,
+                detail="Nessun vino trovato nel CSV. Verifica formato file."
+            )
+        
+        log_with_context(
+            "info",
+            f"[ADMIN_INSERT_JSON] Trovati {len(wines)} vini nel CSV",
+            telegram_id=request.telegram_id,
+            correlation_id=correlation_id
+        )
+        
+        # Usa la stessa logica dell'endpoint multipart
+        async for db in get_db():
+            # Crea/verifica utente e tabelle
+            user_tables = await ensure_user_tables(db, request.telegram_id, request.business_name)
+            table_inventario = user_tables["inventario"]
+            
+            log_with_context(
+                "info",
+                f"[ADMIN_INSERT_JSON] Tabelle utente verificate/create: {list(user_tables.keys())}",
+                telegram_id=request.telegram_id,
+                correlation_id=correlation_id
+            )
+            
+            # Trova utente per user_id
+            stmt = select(User).where(User.telegram_id == request.telegram_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Utente {request.telegram_id} non trovato dopo creazione tabelle"
+                )
+            
+            # Se mode='replace', elimina tutti i vini esistenti
+            if request.mode == "replace":
+                delete_stmt = sql_text(f"""
+                    DELETE FROM {table_inventario}
+                    WHERE user_id = :user_id
+                """)
+                await db.execute(delete_stmt, {"user_id": user.id})
+                await db.commit()
+                log_with_context(
+                    "info",
+                    f"[ADMIN_INSERT_JSON] Inventario esistente eliminato (mode=replace)",
+                    telegram_id=request.telegram_id,
+                    correlation_id=correlation_id
+                )
+            
+            # Batch insert vini (SENZA normalizzazioni/pulizie)
+            saved_count, error_count = await batch_insert_wines(
+                db,
+                table_inventario,
+                wines,
+                user_id=user.id
+            )
+            
+            await db.commit()
+            
+            log_with_context(
+                "info",
+                f"[ADMIN_INSERT_JSON] Inserimento completato: {saved_count} salvati, {error_count} errori",
+                telegram_id=request.telegram_id,
+                correlation_id=correlation_id
+            )
+            
+            return {
+                "status": "success",
+                "telegram_id": request.telegram_id,
+                "business_name": request.business_name,
+                "mode": request.mode,
+                "total_wines": len(wines),
+                "saved_wines": saved_count,  # Compatibile con endpoint multipart
+                "error_count": error_count,
+                "tables_created": list(user_tables.keys())
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_context(
+            "error",
+            f"[ADMIN_INSERT_JSON] Errore inserimento: {e}",
+            telegram_id=request.telegram_id,
+            correlation_id=correlation_id,
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Errore inserimento inventario: {str(e)}"
         )
 
