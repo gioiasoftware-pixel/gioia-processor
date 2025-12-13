@@ -181,6 +181,13 @@ async def process_movement_background(
                 ])
                 params_dict[param_key] = variant_pattern
             
+            logger.info(
+                f"[MOVEMENT] Job {job_id}: 🔍 Searching wine in database | "
+                f"wine_name='{wine_name}', movement_type={movement_type}, quantity={quantity}, "
+                f"telegram_id={telegram_id}, business_name='{business_name}', "
+                f"search_pattern='{wine_name_pattern}', variants={len(search_variants)}"
+            )
+            
             search_wine = sql_text(f"""
                 SELECT id, name, producer, quantity 
                 FROM {table_inventario} 
@@ -196,8 +203,8 @@ async def process_movement_background(
 
             if not wine_row:
                 logger.warning(
-                    f"[MOVEMENT] Job {job_id}: Wine not found | "
-                    f"telegram_id={telegram_id}, business={business_name}, "
+                    f"[MOVEMENT] Job {job_id}: ❌ Wine not found in database | "
+                    f"wine_name='{wine_name}', telegram_id={telegram_id}, business_name='{business_name}', "
                     f"search_pattern='{wine_name_pattern}', table={table_inventario}"
                 )
                 err = f"Vino '{wine_name}' non trovato"
