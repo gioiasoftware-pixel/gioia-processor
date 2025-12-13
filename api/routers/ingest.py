@@ -540,6 +540,8 @@ async def process_inventory_background(
                     error_message=f"Unexpected error: {str(e)}"
                 )
                 break
+        except:
+            pass
         
         # Usa funzione helper che logga e notifica admin automaticamente
         from core.alerting import log_error_and_notify_admin
@@ -554,10 +556,6 @@ async def process_inventory_background(
             job_id=job_id,
             error_code="UNEXPECTED_ERROR"
         )
-                
-                break
-        except:
-            pass
 
 
 @router.post("/process-inventory")
