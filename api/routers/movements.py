@@ -238,9 +238,9 @@ async def process_movement_background(
             quantity_before = wine_row[3] if len(wine_row) > 3 else 0  # quantity
             
             logger.info(
-                f"[MOVEMENT] Job {job_id}: Found wine | "
+                f"[MOVEMENT] Job {job_id}: ✅ Wine found in database | "
                 f"wine_id={wine_id}, wine_name='{wine_name_db}', "
-                f"quantity_before={quantity_before}, requested={quantity}"
+                f"producer='{wine_producer or 'N/A'}', quantity_before={quantity_before}, requested={quantity}, movement_type={movement_type}"
             )
 
             try:
