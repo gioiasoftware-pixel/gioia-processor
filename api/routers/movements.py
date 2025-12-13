@@ -375,6 +375,7 @@ async def process_movement_background(
             result_data = {
                 "status": "success",
                 "movement_type": movement_type,
+                "wine_id": wine_id,  # ID vino per tracciamento e correlazione log
                 "wine_name": wine_name_db,
                 "quantity": quantity,
                 "quantity_before": quantity_before,
