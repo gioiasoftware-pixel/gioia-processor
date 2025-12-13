@@ -396,7 +396,6 @@ async def process_inventory_background(
                                     logger.warning(
                                         f"[POST_PROCESSING] Errore invio messaggio Telegram per duplicati: {notif_error}",
                                         exc_info=True
-                                        exc_info=True
                                     )
                     except Exception as post_error:
                         # Non bloccare il flusso principale se post-processing fallisce
