@@ -337,6 +337,59 @@ def check_error_rate_alert(
         return False
 
 
+async def log_error_and_notify_admin(
+    message: str,
+    telegram_id: Optional[int] = None,
+    correlation_id: Optional[str] = None,
+    component: str = "gioia-processor",
+    error_type: str = "error",
+    exc_info: bool = False,
+    **extra_context
+) -> None:
+    """
+    Logga errore e invia automaticamente notifica admin.
+    
+    Args:
+        message: Messaggio errore
+        telegram_id: ID Telegram utente (opzionale)
+        correlation_id: ID correlazione (opzionale)
+        component: Componente che ha generato l'errore (default: "gioia-processor")
+        error_type: Tipo errore per categorizzazione (default: "error")
+        exc_info: Se True, include traceback nel log
+        **extra_context: Contesto aggiuntivo per la notifica
+    """
+    # Logga sempre l'errore
+    if exc_info:
+        logger.error(message, exc_info=True)
+    else:
+        logger.error(message)
+    
+    # Invia notifica admin (async, non blocca)
+    try:
+        import traceback
+        error_details = {
+            "error_message": str(message),
+            "component": component,
+            "error_type": error_type,
+            **extra_context
+        }
+        
+        # Se exc_info, aggiungi traceback
+        if exc_info:
+            error_details["traceback"] = traceback.format_exc()
+        
+        # Chiama enqueue_admin_notification (già async)
+        await enqueue_admin_notification(
+            event_type="error",
+            telegram_id=telegram_id or 0,
+            payload=error_details,
+            correlation_id=correlation_id or get_correlation_id()
+        )
+    except Exception as notif_error:
+        # Se fallisce la notifica, logga ma non bloccare
+        logger.warning(f"[ALERT] Errore invio notifica admin per errore: {notif_error}", exc_info=True)
+
+
 def estimate_llm_cost(
     model: str,
     input_tokens: int,

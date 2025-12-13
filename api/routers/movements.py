@@ -396,33 +396,23 @@ async def process_movement_background(
 
     except Exception as e:
         error_msg = f"Unexpected error: {str(e)}"
-        logger.error(
-            f"[MOVEMENT] Job {job_id}: {error_msg} | telegram_id={telegram_id}, business={business_name}, "
-            f"wine_name={wine_name}, movement_type={movement_type}, quantity={quantity}",
-            exc_info=True
+        # Usa funzione helper che logga e notifica admin automaticamente
+        from core.alerting import log_error_and_notify_admin
+        await log_error_and_notify_admin(
+            message=f"[MOVEMENT] Job {job_id}: {error_msg} | telegram_id={telegram_id}, business={business_name}, "
+                    f"wine_name={wine_name}, movement_type={movement_type}, quantity={quantity}",
+            telegram_id=telegram_id,
+            correlation_id=job_id,
+            component="gioia-processor",
+            error_type="movement_unexpected_error",
+            exc_info=True,
+            business_name=business_name,
+            job_id=job_id,
+            movement_type=movement_type,
+            wine_name=wine_name,
+            quantity=quantity,
+            error_code="MOVEMENT_UNEXPECTED_ERROR"
         )
-        
-        # Notifica admin per errore inaspettato movimento
-        try:
-            from admin_notifications import enqueue_admin_notification
-            
-            await enqueue_admin_notification(
-                event_type="error",
-                telegram_id=telegram_id,
-                payload={
-                    "business_name": business_name,
-                    "error_type": "movement_unexpected_error",
-                    "error_message": error_msg,
-                    "error_code": "MOVEMENT_UNEXPECTED_ERROR",
-                    "component": "gioia-processor",
-                    "movement_type": movement_type,
-                    "wine_name": wine_name,
-                    "quantity": quantity
-                },
-                correlation_id=job_id
-            )
-        except Exception as notif_error:
-            logger.warning(f"Errore invio notifica admin: {notif_error}")
         
         try:
             async for db in get_db():

@@ -227,32 +227,26 @@ async def process_inventory_background(
                     )
                     
                 except Exception as db_error:
-                    logger.error(f"Job {job_id}: Database error: {db_error}", exc_info=True)
+                    # Usa funzione helper che logga e notifica admin automaticamente
+                    from core.alerting import log_error_and_notify_admin
+                    await log_error_and_notify_admin(
+                        message=f"Job {job_id}: Database error: {db_error}",
+                        telegram_id=telegram_id,
+                        correlation_id=correlation_id,
+                        component="gioia-processor",
+                        error_type="database_error",
+                        exc_info=True,
+                        business_name=business_name,
+                        job_id=job_id,
+                        file_type=file_type,
+                        error_code="DATABASE_ERROR"
+                    )
+                    
                     await update_job_status(
                         db, job_id,
                         status='error',
                         error_message=f"Database error: {str(db_error)}"
                     )
-                    
-                    # Notifica admin per errore database
-                    try:
-                        from admin_notifications import enqueue_admin_notification
-                        
-                        await enqueue_admin_notification(
-                            event_type="error",
-                            telegram_id=telegram_id,
-                            payload={
-                                "business_name": business_name,
-                                "error_type": "database_error",
-                                "error_message": str(db_error),
-                                "error_code": "DATABASE_ERROR",
-                                "component": "gioia-processor",
-                                "file_type": file_type
-                            },
-                            correlation_id=correlation_id
-                        )
-                    except Exception as notif_error:
-                        logger.warning(f"Errore invio notifica admin: {notif_error}", exc_info=True)
                     
                     return
                 
@@ -538,7 +532,6 @@ async def process_inventory_background(
                 return
             
     except Exception as e:
-        logger.error(f"Job {job_id}: Unexpected error: {e}", exc_info=True)
         try:
             async for db in get_db():
                 await update_job_status(
@@ -546,26 +539,21 @@ async def process_inventory_background(
                     status='error',
                     error_message=f"Unexpected error: {str(e)}"
                 )
-                
-                # Notifica admin per errore inaspettato
-                try:
-                    from admin_notifications import enqueue_admin_notification
-                    
-                    await enqueue_admin_notification(
-                        event_type="error",
-                        telegram_id=telegram_id,
-                        payload={
-                            "business_name": business_name,
-                            "error_type": "unexpected_error",
-                            "error_message": str(e),
-                            "error_code": "UNEXPECTED_ERROR",
-                            "component": "gioia-processor",
-                            "job_id": job_id
-                        },
-                        correlation_id=correlation_id
-                    )
-                except Exception as notif_error:
-                    logger.warning(f"Errore invio notifica admin: {notif_error}")
+                break
+        
+        # Usa funzione helper che logga e notifica admin automaticamente
+        from core.alerting import log_error_and_notify_admin
+        await log_error_and_notify_admin(
+            message=f"Job {job_id}: Unexpected error: {e}",
+            telegram_id=telegram_id,
+            correlation_id=correlation_id,
+            component="gioia-processor",
+            error_type="unexpected_error",
+            exc_info=True,
+            business_name=business_name,
+            job_id=job_id,
+            error_code="UNEXPECTED_ERROR"
+        )
                 
                 break
         except:

@@ -86,6 +86,37 @@ async def startup_event():
             
     except Exception as e:
         logger.error(f"Error during startup: {e}", exc_info=True)
+        # Notifica admin per errore startup (critico)
+        try:
+            from admin_notifications import enqueue_admin_notification
+            from core.logger import get_correlation_id
+            import asyncio
+            
+            # Crea task per notifica (non blocca startup)
+            async def notify_startup_error():
+                await enqueue_admin_notification(
+                    event_type="error",
+                    telegram_id=0,
+                    payload={
+                        "error_type": "startup_error",
+                        "error_message": str(e),
+                        "error_code": "STARTUP_ERROR",
+                        "component": "gioia-processor",
+                        "severity": "critical"
+                    },
+                    correlation_id=get_correlation_id()
+                )
+            
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(notify_startup_error())
+                else:
+                    loop.run_until_complete(notify_startup_error())
+            except Exception:
+                pass  # Non bloccare startup se notifica fallisce
+        except Exception:
+            pass  # Non bloccare startup se import fallisce
 
 
 @app.on_event("shutdown")
