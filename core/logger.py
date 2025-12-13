@@ -67,6 +67,25 @@ def setup_colored_logging(service_name: str = "processor"):
     # Aggiungi handler colorato
     root_logger.addHandler(handler)
     
+    # Configura logger di uvicorn per usare il nostro formatter
+    uvicorn_logger = logging.getLogger('uvicorn')
+    uvicorn_logger.handlers = []
+    uvicorn_logger.addHandler(handler)
+    uvicorn_logger.setLevel(logging.INFO)
+    uvicorn_logger.propagate = False
+    
+    uvicorn_error_logger = logging.getLogger('uvicorn.error')
+    uvicorn_error_logger.handlers = []
+    uvicorn_error_logger.addHandler(handler)
+    uvicorn_error_logger.setLevel(logging.INFO)
+    uvicorn_error_logger.propagate = False
+    
+    uvicorn_access_logger = logging.getLogger('uvicorn.access')
+    uvicorn_access_logger.handlers = []
+    uvicorn_access_logger.addHandler(handler)
+    uvicorn_access_logger.setLevel(logging.INFO)
+    uvicorn_access_logger.propagate = False
+    
     # Configura logger specifici per ridurre verbosità
     logging.getLogger('httpx').setLevel(logging.WARNING)
     logging.getLogger('httpcore').setLevel(logging.WARNING)
