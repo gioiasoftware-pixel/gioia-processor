@@ -502,6 +502,7 @@ async def process_movement(
                     return {
                         "status": "success",
                         "job_id": job_id,
+                        "wine_id": result_data.get("wine_id"),  # ID vino per tracciamento
                         "wine_name": result_data.get("wine_name", wine_name),
                         "quantity": quantity,
                         "quantity_before": result_data.get("quantity_before", 0),

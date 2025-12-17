@@ -582,7 +582,7 @@ async def update_wine_field(
     """
     Aggiorna un singolo campo per un vino dell'inventario utente.
     Campi supportati: producer, supplier, vintage, grape_variety, classification, 
-    selling_price, cost_price, alcohol_content, description, notes
+    selling_price, cost_price, alcohol_content, description, notes, region, country, wine_type
     """
     try:
         allowed_fields = {
@@ -596,6 +596,9 @@ async def update_wine_field(
             'alcohol_content': 'alcohol_content',
             'description': 'description',
             'notes': 'notes',
+            'region': 'region',
+            'country': 'country',
+            'wine_type': 'wine_type',
         }
         
         if field not in allowed_fields:
@@ -624,7 +627,17 @@ async def update_wine_field(
                     return parsed
                 except (ValueError, TypeError):
                     raise HTTPException(status_code=400, detail=f"Numero non valido per {f}: '{v}'")
-            # Per stringhe, rimuovi spazi eccessivi
+            if f == 'wine_type':
+                # Validazione enum per tipo vino
+                valid_types = ['Rosso', 'Bianco', 'Rosato', 'Spumante', 'Altro']
+                v_normalized = str(v).strip()
+                if v_normalized and v_normalized not in valid_types:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Tipo vino non valido: '{v_normalized}'. Tipi validi: {', '.join(valid_types)}"
+                    )
+                return v_normalized if v_normalized else None
+            # Per stringhe (region, country, etc.), rimuovi spazi eccessivi
             return str(v).strip() if v else None
         
         column = allowed_fields[field]
@@ -686,6 +699,232 @@ async def update_wine_field(
         raise
     except Exception as e:
         logger.error(f"[UPDATE_WINE_FIELD] Errore aggiornamento campo vino: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Errore interno durante aggiornamento: {str(e)}"
+        )
+
+
+@router.post("/update-wine-field-with-movement")
+async def update_wine_field_with_movement(
+    telegram_id: int = Form(...),
+    business_name: str = Form(...),
+    wine_id: int = Form(...),
+    field: str = Form(...),
+    new_value: int = Form(...)
+):
+    """
+    Aggiorna campo quantity creando automaticamente un movimento nel log.
+    Mantiene il flusso di tracciabilità come se fosse fatto in chat.
+    
+    Args:
+        telegram_id: ID Telegram utente
+        business_name: Nome business
+        wine_id: ID vino da aggiornare
+        field: Deve essere 'quantity'
+        new_value: Nuova quantità (intero >= 0)
+    
+    Returns:
+        Dict con status, wine_id, movement_type, quantity_change, etc.
+    """
+    try:
+        # Validazione campo
+        if field != 'quantity':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Questo endpoint supporta solo field='quantity'. Ricevuto: '{field}'"
+            )
+        
+        # Validazione valore
+        if not isinstance(new_value, int) or new_value < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantità deve essere un intero >= 0. Ricevuto: {new_value}"
+            )
+        
+        async for db in get_db():
+            # Verifica utente
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
+            
+            # Assicura esistenza tabelle
+            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            table_inventario = user_tables["inventario"]
+            table_consumi = user_tables["consumi"]
+            
+            # Recupera vino con quantity_before
+            get_wine = sql_text(f"""
+                SELECT id, name, producer, quantity
+                FROM {table_inventario}
+                WHERE id = :wine_id AND user_id = :user_id
+            """)
+            wine_result = await db.execute(get_wine, {"wine_id": wine_id, "user_id": user.id})
+            wine_row = wine_result.fetchone()
+            
+            if not wine_row:
+                raise HTTPException(status_code=404, detail=f"Vino con id {wine_id} non trovato")
+            
+            wine_id_db = wine_row[0]
+            wine_name_db = wine_row[1]  # name
+            wine_producer = wine_row[2] if len(wine_row) > 2 else None  # producer
+            quantity_before = wine_row[3] if len(wine_row) > 3 else 0  # quantity
+            
+            logger.info(
+                f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Vino trovato: wine_id={wine_id}, "
+                f"wine_name='{wine_name_db}', quantity_before={quantity_before}, new_value={new_value}"
+            )
+            
+            # Calcola differenza
+            quantity_change = new_value - quantity_before
+            
+            # Se non c'è cambiamento, aggiorna solo quantity senza movimento
+            if quantity_change == 0:
+                update_stmt = sql_text(f"""
+                    UPDATE {table_inventario}
+                    SET quantity = :val, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :wine_id AND user_id = :user_id
+                    RETURNING id
+                """)
+                result = await db.execute(update_stmt, {"val": new_value, "wine_id": wine_id, "user_id": user.id})
+                updated = result.scalar_one_or_none()
+                
+                if not updated:
+                    await db.rollback()
+                    raise HTTPException(status_code=404, detail="Vino non trovato dopo aggiornamento")
+                
+                await db.commit()
+                
+                log_with_context(
+                    "info",
+                    f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Quantità aggiornata senza movimento: {quantity_before} → {new_value} per wine_id={wine_id}",
+                    telegram_id=telegram_id
+                )
+                
+                return {
+                    "status": "success",
+                    "wine_id": wine_id,
+                    "field": field,
+                    "value": new_value,
+                    "quantity_before": quantity_before,
+                    "quantity_after": new_value,
+                    "movement_created": False,
+                    "message": f"Quantità aggiornata (nessun movimento necessario: quantità invariata)"
+                }
+            
+            # Determina movement_type
+            if quantity_change > 0:
+                movement_type = 'rifornimento'
+                logger.info(
+                    f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Movimento tipo: {movement_type}, "
+                    f"quantity_change={quantity_change}"
+                )
+            else:
+                movement_type = 'consumo'
+                logger.info(
+                    f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Movimento tipo: {movement_type}, "
+                    f"quantity_change={quantity_change} (valore assoluto: {abs(quantity_change)})"
+                )
+                # Validazione quantità sufficiente per consumo
+                if quantity_before < abs(quantity_change):
+                    logger.warning(
+                        f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Quantità insufficiente per consumo: "
+                        f"disponibili={quantity_before}, richieste={new_value}, differenza={abs(quantity_change)}"
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Quantità insufficiente: disponibili {quantity_before}, richieste {new_value}"
+                    )
+            
+            quantity_after = new_value
+            
+            # Calcola quantity_change per il log (positivo per rifornimento, negativo per consumo)
+            movement_quantity_change = abs(quantity_change) if movement_type == 'rifornimento' else -abs(quantity_change)
+            
+            try:
+                # UPDATE quantity nella tabella inventario
+                update_stmt = sql_text(f"""
+                    UPDATE {table_inventario}
+                    SET quantity = :val, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :wine_id AND user_id = :user_id
+                    RETURNING id
+                """)
+                result = await db.execute(update_stmt, {"val": new_value, "wine_id": wine_id, "user_id": user.id})
+                updated = result.scalar_one_or_none()
+                
+                if not updated:
+                    await db.rollback()
+                    raise HTTPException(status_code=404, detail="Vino non trovato dopo aggiornamento")
+                
+                logger.info(
+                    f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] UPDATE inventario eseguito - "
+                    f"quantity: {quantity_before} → {quantity_after} per wine_id={wine_id}"
+                )
+                
+                # INSERT movimento nella tabella Consumi e rifornimenti
+                insert_mov = sql_text(f"""
+                    INSERT INTO {table_consumi}
+                        (user_id, wine_name, wine_producer, movement_type, quantity_change, quantity_before, quantity_after, movement_date)
+                    VALUES (:user_id, :wine_name, :wine_producer, :movement_type, :quantity_change, :quantity_before, :quantity_after, CURRENT_TIMESTAMP)
+                """)
+                await db.execute(insert_mov, {
+                    "user_id": user.id,
+                    "wine_name": wine_name_db,
+                    "wine_producer": wine_producer,
+                    "movement_type": movement_type,
+                    "quantity_change": movement_quantity_change,
+                    "quantity_before": quantity_before,
+                    "quantity_after": quantity_after
+                })
+                
+                logger.info(
+                    f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] INSERT log movimento eseguito - "
+                    f"movement_type={movement_type}, quantity_change={movement_quantity_change}"
+                )
+                
+                await db.commit()
+                
+                log_with_context(
+                    "info",
+                    f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Campo quantity aggiornato con movimento: {quantity_before} → {quantity_after} "
+                    f"({movement_type} {abs(quantity_change)}) per wine_id={wine_id}",
+                    telegram_id=telegram_id
+                )
+                
+                return {
+                    "status": "success",
+                    "wine_id": wine_id,
+                    "field": field,
+                    "value": new_value,
+                    "quantity_before": quantity_before,
+                    "quantity_after": quantity_after,
+                    "movement_type": movement_type,
+                    "quantity_change": movement_quantity_change,
+                    "movement_created": True,
+                    "message": f"Quantità aggiornata e movimento {movement_type} registrato"
+                }
+                
+            except HTTPException:
+                await db.rollback()
+                raise
+            except Exception as te:
+                await db.rollback()
+                logger.error(
+                    f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Errore transazione: {te}",
+                    exc_info=True
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Errore durante aggiornamento quantità: {str(te)}"
+                )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Errore aggiornamento quantità con movimento: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Errore interno durante aggiornamento: {str(e)}"
