@@ -930,3 +930,132 @@ async def update_wine_field_with_movement(
             detail=f"Errore interno durante aggiornamento: {str(e)}"
         )
 
+
+@router.post("/add-wine")
+async def add_wine(
+    telegram_id: int = Form(...),
+    business_name: str = Form(...),
+    name: str = Form(...),
+    producer: Optional[str] = Form(None),
+    quantity: Optional[int] = Form(None),
+    selling_price: Optional[float] = Form(None),
+    cost_price: Optional[float] = Form(None),
+    vintage: Optional[str] = Form(None),
+    region: Optional[str] = Form(None),
+    country: Optional[str] = Form(None),
+    wine_type: Optional[str] = Form(None),
+    supplier: Optional[str] = Form(None),
+    grape_variety: Optional[str] = Form(None),
+    classification: Optional[str] = Form(None),
+    alcohol_content: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None)
+):
+    """
+    Aggiunge un nuovo vino all'inventario.
+    
+    Args:
+        telegram_id: ID Telegram utente
+        business_name: Nome business
+        name: Nome vino (obbligatorio)
+        Altri campi: opzionali
+    
+    Returns:
+        Dict con status, wine_id, etc.
+    """
+    try:
+        # Validazione nome
+        if not name or not name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Il nome del vino è obbligatorio"
+            )
+        
+        async for db in get_db():
+            # Verifica utente
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
+            
+            # Assicura esistenza tabelle
+            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            table_inventario = user_tables["inventario"]
+            
+            # Prepara dati vino
+            wine_data = {
+                "user_id": user.id,
+                "name": name.strip(),
+                "producer": producer.strip() if producer else None,
+                "supplier": supplier.strip() if supplier else None,
+                "vintage": _parse_int(vintage) if vintage else None,
+                "grape_variety": grape_variety.strip() if grape_variety else None,
+                "region": region.strip() if region else None,
+                "country": country.strip() if country else None,
+                "wine_type": wine_type.strip() if wine_type else None,
+                "classification": classification.strip() if classification else None,
+                "quantity": quantity if quantity is not None else 0,
+                "min_quantity": 0,
+                "cost_price": _parse_float(cost_price) if cost_price else None,
+                "selling_price": _parse_float(selling_price) if selling_price else None,
+                "alcohol_content": _parse_float(alcohol_content) if alcohol_content else None,
+                "description": description.strip() if description else None,
+                "notes": notes.strip() if notes else None,
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+            
+            # Validazione wine_type se fornito
+            if wine_data["wine_type"]:
+                allowed_types = ['Rosso', 'Bianco', 'Rosato', 'Spumante', 'Altro']
+                if wine_data["wine_type"] not in allowed_types:
+                    logger.warning(
+                        f"[ADD_WINE] wine_type '{wine_data['wine_type']}' non valido, "
+                        f"usando 'Altro'"
+                    )
+                    wine_data["wine_type"] = "Altro"
+            
+            # Inserisci vino
+            insert_stmt = sql_text(f"""
+                INSERT INTO {table_inventario}
+                    (user_id, name, producer, supplier, vintage, grape_variety, region, 
+                     country, wine_type, classification, quantity, min_quantity, 
+                     cost_price, selling_price, alcohol_content, description, notes, 
+                     created_at, updated_at)
+                VALUES 
+                    (:user_id, :name, :producer, :supplier, :vintage, :grape_variety, :region,
+                     :country, :wine_type, :classification, :quantity, :min_quantity,
+                     :cost_price, :selling_price, :alcohol_content, :description, :notes,
+                     :created_at, :updated_at)
+                RETURNING id
+            """)
+            
+            result = await db.execute(insert_stmt, wine_data)
+            wine_id = result.scalar_one()
+            
+            await db.commit()
+            
+            log_with_context(
+                "info",
+                f"[ADD_WINE] Vino aggiunto: wine_id={wine_id}, name='{name}', "
+                f"telegram_id={telegram_id}, business_name={business_name}",
+                telegram_id=telegram_id
+            )
+            
+            return {
+                "status": "success",
+                "wine_id": wine_id,
+                "message": f"Vino '{name}' aggiunto con successo"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ADD_WINE] Errore aggiunta vino: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Errore interno durante aggiunta vino: {str(e)}"
+        )
+
