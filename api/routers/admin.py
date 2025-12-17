@@ -1035,6 +1035,15 @@ async def add_wine(
             result = await db.execute(insert_stmt, wine_data)
             wine_id = result.scalar_one()
             
+            # Assicura che wine_id sia un intero
+            if wine_id is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Errore: wine_id non restituito dopo inserimento"
+                )
+            
+            wine_id = int(wine_id)  # Assicura che sia un intero
+            
             await db.commit()
             
             log_with_context(
