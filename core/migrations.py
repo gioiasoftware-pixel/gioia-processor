@@ -76,7 +76,9 @@ async def migrate_tables_telegram_to_user_id():
                     continue
                 
                 # Rinomina tabella
-                rename_table = sql_text(f'ALTER TABLE {table_name} RENAME TO {new_table_name}')
+                # IMPORTANTE: table_name da information_schema non ha virgolette, ma dobbiamo quotarlo per ALTER TABLE
+                old_table_name_quoted = f'"{table_name}"'
+                rename_table = sql_text(f'ALTER TABLE {old_table_name_quoted} RENAME TO {new_table_name}')
                 await db.execute(rename_table)
                 
                 # Rinomina indici (se esistono)
