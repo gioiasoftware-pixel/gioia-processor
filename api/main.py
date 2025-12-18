@@ -55,7 +55,7 @@ async def run_auto_migrations():
     # Importa direttamente le funzioni di migrazione dal modulo core.migrations
     # Questo è molto più affidabile che cercare file con percorsi
     try:
-        from core.migrations import migrate_tables_telegram_to_user_id, migrate_wine_history
+        from core.migrations import migrate_wine_history
         logger.info("[AUTO-MIGRATION] Funzioni migrazione importate correttamente da core.migrations")
     except ImportError as e:
         logger.error(f"[AUTO-MIGRATION] ✗✗✗ IMPOSSIBILE importare funzioni migrazione: {e}")
@@ -64,30 +64,6 @@ async def run_auto_migrations():
     
     async for db in get_db():
         try:
-            # Migrazione 005: Rinomina tabelle da telegram_id a user_id
-            # Controlla se ci sono ancora tabelle con formato telegram_id
-            # NOTA: in information_schema.tables i nomi sono SENZA virgolette
-            check_005 = sql_text("""
-                SELECT COUNT(*) 
-                FROM information_schema.tables
-                WHERE table_schema = 'public'
-                AND table_name ~ '^[0-9]+/'
-            """)
-            result = await db.execute(check_005)
-            count_old_tables = result.scalar() or 0
-            
-            if count_old_tables > 0:
-                logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 005: {count_old_tables} tabelle da migrare")
-                
-                try:
-                    await migrate_tables_telegram_to_user_id()
-                    logger.info("[AUTO-MIGRATION] ✓✓✓ Migrazione 005 completata con successo!")
-                except Exception as e:
-                    logger.error(f"[AUTO-MIGRATION] ✗✗✗ Errore esecuzione migrazione 005: {e}", exc_info=True)
-                    raise
-            else:
-                logger.info("[AUTO-MIGRATION] Migrazione 005 non necessaria (nessuna tabella con formato telegram_id)")
-            
             # Migrazione 004: Popola Storico vino
             # Controlla se ci sono utenti con movimenti ma senza storico
             check_004 = sql_text("""
@@ -112,17 +88,8 @@ async def run_auto_migrations():
             if count_users_needing_migration > 0:
                 logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 004: {count_users_needing_migration} utenti da migrare")
                 
-                if not migration_004_path:
-                    logger.error("[AUTO-MIGRATION] ✗✗✗ IMPOSSIBILE eseguire migrazione 004: file non trovato!")
-                    return
-                
-                # Importa ed esegue migrazione 004
                 try:
-                    spec_004 = importlib.util.spec_from_file_location("migrate_004", migration_004_path)
-                    module_004 = importlib.util.module_from_spec(spec_004)
-                    sys.modules["migrate_004"] = module_004
-                    spec_004.loader.exec_module(module_004)
-                    await module_004.migrate_wine_history()
+                    await migrate_wine_history()
                     logger.info("[AUTO-MIGRATION] ✓✓✓ Migrazione 004 completata con successo!")
                 except Exception as e:
                     logger.error(f"[AUTO-MIGRATION] ✗✗✗ Errore esecuzione migrazione 004: {e}", exc_info=True)
