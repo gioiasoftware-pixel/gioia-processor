@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 async def migrate_wine_history():
     """
     Migra storico vini da "Consumi e rifornimenti" a "Storico vino"
+    CREA DIRETTAMENTE le tabelle "Storico vino" per gli utenti esistenti usando formato user_id
     """
     async for db in get_db():
         # Trova tutti gli utenti
@@ -24,23 +25,63 @@ async def migrate_wine_history():
         
         for user in users:
             try:
-                if not user.telegram_id or not user.business_name:
-                    logger.info(f"[MIGRATION] Skip utente {user.id}: telegram_id o business_name mancante")
+                if not user.business_name:
+                    logger.info(f"[MIGRATION] Skip utente {user.id}: business_name mancante")
                     continue
                 
-                logger.info(f"[MIGRATION] Processo utente {user.id} (telegram_id={user.telegram_id}, business_name={user.business_name})")
+                logger.info(f"[MIGRATION] Processo utente {user.id} (business_name={user.business_name})")
                 
-                # Assicura che tabelle esistano (crea "Storico vino" se non esiste)
-                # IMPORTANTE: Questo crea la tabella "Storico vino" anche se non esiste
-                user_tables = await ensure_user_tables_from_telegram_id(db, user.telegram_id, user.business_name)
-                table_consumi = user_tables["consumi"]
-                table_storico = user_tables.get("storico")
+                # CREA DIRETTAMENTE la tabella "Storico vino" usando formato user_id
+                table_storico_name = f'"{user.id}/{user.business_name} Storico vino"'
                 
-                if not table_storico:
-                    logger.error(f"[MIGRATION] ✗✗✗ Tabella Storico vino non creata per utente {user.id} - questo non dovrebbe succedere!")
-                    continue
+                # Verifica se esiste già
+                check_storico = sql_text("""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = :table_name
+                """)
+                result_storico = await db.execute(check_storico, {"table_name": f"{user.id}/{user.business_name} Storico vino"})
+                storico_exists = result_storico.scalar_one_or_none()
                 
-                logger.info(f"[MIGRATION] ✓ Tabella Storico vino verificata/creata: {table_storico}")
+                if not storico_exists:
+                    # Crea direttamente la tabella Storico vino con formato user_id
+                    create_storico = sql_text(f"""
+                        CREATE TABLE {table_storico_name} (
+                            id SERIAL PRIMARY KEY,
+                            user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                            wine_name VARCHAR(200) NOT NULL,
+                            wine_producer VARCHAR(200),
+                            wine_vintage INTEGER,
+                            current_stock INTEGER NOT NULL DEFAULT 0,
+                            history JSONB NOT NULL DEFAULT '[]'::jsonb,
+                            first_movement_date TIMESTAMP,
+                            last_movement_date TIMESTAMP,
+                            total_consumi INTEGER DEFAULT 0,
+                            total_rifornimenti INTEGER DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(user_id, wine_name, wine_producer, wine_vintage)
+                        )
+                    """)
+                    await db.execute(create_storico)
+                    
+                    # Indici per Storico vino
+                    indexes_storico = [
+                        f"CREATE INDEX IF NOT EXISTS idx_storico_{user.id}_wine_name ON {table_storico_name} (wine_name)",
+                        f"CREATE INDEX IF NOT EXISTS idx_storico_{user.id}_wine_producer ON {table_storico_name} (wine_producer)",
+                        f"CREATE INDEX IF NOT EXISTS idx_storico_{user.id}_last_movement ON {table_storico_name} (last_movement_date)",
+                        f"CREATE INDEX IF NOT EXISTS idx_storico_{user.id}_history_gin ON {table_storico_name} USING GIN (history)"
+                    ]
+                    for index_sql in indexes_storico:
+                        await db.execute(sql_text(index_sql))
+                    
+                    logger.info(f"[MIGRATION] ✓✓✓ Tabella Storico vino creata: {table_storico_name}")
+                    await db.commit()
+                else:
+                    logger.info(f"[MIGRATION] ✓ Tabella Storico vino già esistente: {table_storico_name}")
+                
+                # Nome tabella consumi (formato user_id)
+                table_consumi_name = f'"{user.id}/{user.business_name} Consumi e rifornimenti"'
                 
                 # Leggi tutti i movimenti per questo utente
                 query_movements = sql_text(f"""
@@ -52,7 +93,7 @@ async def migrate_wine_history():
                         quantity_before,
                         quantity_after,
                         movement_date
-                    FROM {table_consumi}
+                    FROM {table_consumi_name}
                     WHERE user_id = :user_id
                     ORDER BY movement_date ASC
                 """)
@@ -113,7 +154,7 @@ async def migrate_wine_history():
                     
                     # Verifica se esiste già
                     check_existing = sql_text(f"""
-                        SELECT id FROM {table_storico}
+                        SELECT id FROM {table_storico_name}
                         WHERE user_id = :user_id
                         AND wine_name = :wine_name
                         AND (wine_producer = :wine_producer OR (wine_producer IS NULL AND :wine_producer IS NULL))
@@ -129,7 +170,7 @@ async def migrate_wine_history():
                     if existing:
                         # UPDATE
                         update_storico = sql_text(f"""
-                            UPDATE {table_storico}
+                            UPDATE {table_storico_name}
                             SET current_stock = :current_stock,
                                 history = :history::jsonb,
                                 total_consumi = :total_consumi,
@@ -151,7 +192,7 @@ async def migrate_wine_history():
                     else:
                         # INSERT
                         insert_storico = sql_text(f"""
-                            INSERT INTO {table_storico}
+                            INSERT INTO {table_storico_name}
                                 (user_id, wine_name, wine_producer, current_stock, history,
                                  first_movement_date, last_movement_date, total_consumi, total_rifornimenti)
                             VALUES (:user_id, :wine_name, :wine_producer, :current_stock, :history::jsonb,
