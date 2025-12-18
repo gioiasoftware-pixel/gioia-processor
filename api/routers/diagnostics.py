@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import User, ensure_user_tables, get_db
+from core.database import User, ensure_user_tables_from_telegram_id, get_db
 from core.diagnostics_state import get_snapshot as get_diagnostics_snapshot
 from ingest.header_identifier import identify_headers_and_extract
 from ingest.llm_extract import deduplicate_wines
@@ -163,7 +163,7 @@ async def compare_inventory(
     if not user:
         raise HTTPException(status_code=404, detail="Utente non trovato nel database")
 
-    user_tables = await ensure_user_tables(db, telegram_id, business_name)
+    user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
     table_inventario = user_tables["inventario"]
 
     fetch_stmt = sql_text(

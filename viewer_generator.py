@@ -19,7 +19,7 @@ async def generate_viewer_html_from_db(
     """
     Estrae dati inventario dal DB e genera HTML completo.
     """
-    from core.database import ensure_user_tables, User
+    from core.database import ensure_user_tables_from_telegram_id, User
     from sqlalchemy import select
     from datetime import datetime
     
@@ -37,7 +37,7 @@ async def generate_viewer_html_from_db(
         raise ValueError(f"Utente non trovato per telegram_id={telegram_id}")
     
     # Assicura che tabelle esistano
-    user_tables = await ensure_user_tables(db, telegram_id, business_name)
+    user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
     table_inventario = user_tables["inventario"]
     
     # Recupera tutti i vini
@@ -231,7 +231,7 @@ async def prepare_viewer_data(
     Salva in cache per essere recuperati successivamente.
     """
     import time
-    from core.database import ensure_user_tables, User
+    from core.database import ensure_user_tables_from_telegram_id, User
     from sqlalchemy import select
     
     logger.info(
@@ -248,7 +248,7 @@ async def prepare_viewer_data(
         raise ValueError(f"Utente non trovato per telegram_id={telegram_id}")
     
     # Assicura che tabelle esistano
-    user_tables = await ensure_user_tables(db, telegram_id, business_name)
+    user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
     table_inventario = user_tables["inventario"]
     
     # Recupera tutti i vini

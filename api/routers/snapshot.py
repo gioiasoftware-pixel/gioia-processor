@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db, ensure_user_tables, User
+from core.database import get_db, ensure_user_tables_from_telegram_id, User
 from jwt_utils import validate_viewer_token
 from viewer_generator import (
     generate_viewer_html_from_db,
@@ -69,7 +69,7 @@ async def get_inventory_snapshot_endpoint(token: str = Query(...)):
                 raise HTTPException(status_code=404, detail="Utente non trovato")
             
             # Assicura che tabelle esistano
-            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
             table_inventario = user_tables["inventario"]
             
             # Recupera tutti i vini
@@ -196,7 +196,7 @@ async def export_inventory_csv_endpoint(token: str = Query(...)):
                 raise HTTPException(status_code=404, detail="Utente non trovato")
             
             # Assicura che tabelle esistano
-            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
             table_inventario = user_tables["inventario"]
             
             # Recupera tutti i vini
@@ -383,5 +383,114 @@ async def get_viewer_html_endpoint(view_id: str):
         raise
     except Exception as e:
         logger.error(f"[VIEWER_GET] Errore servendo HTML: {e}, view_id={view_id}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+
+@router.get("/viewer/movements")
+async def get_wine_movements_endpoint(
+    wine_name: str = Query(...),
+    telegram_id: int = Query(...)
+):
+    """
+    Restituisce movimenti e stock per un vino specifico.
+    Legge da "Storico vino" (fonte unica di verità).
+    """
+    try:
+        async for db in get_db():
+            # Verifica utente
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail="Utente non trovato")
+            
+            if not user.business_name:
+                raise HTTPException(status_code=400, detail="Utente senza business_name")
+            
+            # Assicura tabelle esistano
+            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, user.business_name)
+            table_storico = user_tables.get("storico")
+            
+            if not table_storico:
+                # Nessun storico disponibile
+                return {
+                    "wine_name": wine_name,
+                    "current_stock": 0,
+                    "opening_stock": 0,
+                    "movements": []
+                }
+            
+            # Cerca storico vino
+            query_storico = sql_text(f"""
+                SELECT 
+                    current_stock,
+                    history,
+                    first_movement_date,
+                    last_movement_date,
+                    total_consumi,
+                    total_rifornimenti
+                FROM {table_storico}
+                WHERE user_id = :user_id
+                AND wine_name = :wine_name
+                LIMIT 1
+            """)
+            
+            result = await db.execute(query_storico, {
+                "user_id": user.id,
+                "wine_name": wine_name
+            })
+            storico_row = result.fetchone()
+            
+            if not storico_row:
+                # Nessun movimento per questo vino
+                return {
+                    "wine_name": wine_name,
+                    "current_stock": 0,
+                    "opening_stock": 0,
+                    "movements": []
+                }
+            
+            # Estrai history (JSONB)
+            import json
+            history = storico_row[1] if storico_row[1] else []
+            if isinstance(history, str):
+                history = json.loads(history)
+            
+            # Converti history in formato per frontend
+            movements = []
+            for entry in history:
+                movements.append({
+                    "at": entry.get("date"),
+                    "type": entry.get("type"),
+                    "quantity_change": entry.get("quantity") if entry.get("type") == "rifornimento" else -entry.get("quantity", 0),
+                    "quantity_before": entry.get("quantity_before", 0),
+                    "quantity_after": entry.get("quantity_after", 0)
+                })
+            
+            # Ordina per data
+            movements.sort(key=lambda x: x["at"] if x["at"] else "")
+            
+            # Stock finale = current_stock dalla tabella (fonte unica di verità)
+            current_stock = storico_row[0] or 0
+            
+            # Opening stock = primo movimento quantity_before (o 0 se non c'è)
+            opening_stock = movements[0]["quantity_before"] if movements else 0
+            
+            return {
+                "wine_name": wine_name,
+                "current_stock": current_stock,
+                "opening_stock": opening_stock,
+                "movements": movements,
+                "total_consumi": storico_row[4] or 0,
+                "total_rifornimenti": storico_row[5] or 0,
+                "first_movement_date": storico_row[2].isoformat() if storico_row[2] else None,
+                "last_movement_date": storico_row[3].isoformat() if storico_row[3] else None
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[VIEWER_MOVEMENTS] Errore: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 

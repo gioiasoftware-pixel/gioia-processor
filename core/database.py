@@ -126,14 +126,14 @@ async def get_db():
             await session.close()
 
 
-def get_user_table_name(telegram_id: int, business_name: str, table_type: str) -> str:
+def get_user_table_name(user_id: int, business_name: str, table_type: str) -> str:
     """
-    Genera nome tabella nel formato: "{telegram_id}/{business_name} {table_type}"
+    Genera nome tabella nel formato: "{user_id}/{business_name} {table_type}"
     
     Args:
-        telegram_id: ID Telegram dell'utente
+        user_id: ID utente (PK da users.id)
         business_name: Nome del locale
-        table_type: Tipo tabella ("INVENTARIO", "INVENTARIO backup", "LOG interazione", "Consumi e rifornimenti")
+        table_type: Tipo tabella ("INVENTARIO", "INVENTARIO backup", "LOG interazione", "Consumi e rifornimenti", "Storico vino")
     
     Returns:
         Nome tabella quotato per PostgreSQL
@@ -141,50 +141,65 @@ def get_user_table_name(telegram_id: int, business_name: str, table_type: str) -
     if not business_name:
         business_name = "Upload Manuale"
     
-    table_name = f'"{telegram_id}/{business_name} {table_type}"'
+    table_name = f'"{user_id}/{business_name} {table_type}"'
     return table_name
 
 
-async def ensure_user_tables(session, telegram_id: int, business_name: str) -> dict:
+async def ensure_user_tables_from_telegram_id(session, telegram_id: int, business_name: str) -> dict:
     """
-    Crea le 4 tabelle utente nello schema public se non esistono.
+    Helper per retrocompatibilità: converte telegram_id a user_id e chiama ensure_user_tables.
+    
+    DEPRECATO: Usa ensure_user_tables() direttamente con user_id.
+    """
+    # Trova user_id da telegram_id
+    stmt = select(User).where(User.telegram_id == telegram_id)
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise ValueError(f"User con telegram_id={telegram_id} non trovato")
+    
+    return await ensure_user_tables(session, user.id, business_name)
+
+
+async def ensure_user_tables(session, user_id: int, business_name: str) -> dict:
+    """
+    Crea le 5 tabelle utente nello schema public se non esistono.
     
     Tabelle create:
-    1. "{telegram_id}/{business_name} INVENTARIO" - Inventario vini
-    2. "{telegram_id}/{business_name} INVENTARIO backup" - Backup inventario
-    3. "{telegram_id}/{business_name} LOG interazione" - Log interazioni bot
-    4. "{telegram_id}/{business_name} Consumi e rifornimenti" - Consumi e rifornimenti
+    1. "{user_id}/{business_name} INVENTARIO" - Inventario vini
+    2. "{user_id}/{business_name} INVENTARIO backup" - Backup inventario
+    3. "{user_id}/{business_name} LOG interazione" - Log interazioni bot
+    4. "{user_id}/{business_name} Consumi e rifornimenti" - Consumi e rifornimenti
+    5. "{user_id}/{business_name} Storico vino" - Storico vini (NUOVO)
     
-    Ritorna dict con nomi tabelle create.
+    Args:
+        session: Sessione database
+        user_id: ID utente (PK da users.id)
+        business_name: Nome business
+    
+    Returns:
+        Dict con nomi tabelle create.
     """
     if not business_name:
         business_name = "Upload Manuale"
     
     try:
-        # Verifica e crea/aggiorna utente nella tabella users
-        upsert_user = sql_text("""
-            INSERT INTO users (telegram_id, business_name, created_at, updated_at)
-            VALUES (:telegram_id, :business_name, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT (telegram_id) 
-            DO UPDATE SET 
-                business_name = EXCLUDED.business_name, 
-                updated_at = CURRENT_TIMESTAMP
-            RETURNING id
-        """)
-        result_user = await session.execute(upsert_user, {"telegram_id": telegram_id, "business_name": business_name})
-        user_id = result_user.scalar_one()
-        logger.info(f"User {telegram_id} ensured with id {user_id}, business_name: {business_name}")
+        # Verifica che utente esista
+        check_user = sql_text("SELECT id FROM users WHERE id = :user_id")
+        result = await session.execute(check_user, {"user_id": user_id})
+        if not result.scalar_one_or_none():
+            raise ValueError(f"User {user_id} non trovato")
         
-        await session.commit()
-        
-        # Nomi tabelle
-        table_inventario = get_user_table_name(telegram_id, business_name, "INVENTARIO")
-        table_backup = get_user_table_name(telegram_id, business_name, "INVENTARIO backup")
-        table_log = get_user_table_name(telegram_id, business_name, "LOG interazione")
-        table_consumi = get_user_table_name(telegram_id, business_name, "Consumi e rifornimenti")
+        # Nomi tabelle (usando user_id invece di telegram_id)
+        table_inventario = get_user_table_name(user_id, business_name, "INVENTARIO")
+        table_backup = get_user_table_name(user_id, business_name, "INVENTARIO backup")
+        table_log = get_user_table_name(user_id, business_name, "LOG interazione")
+        table_consumi = get_user_table_name(user_id, business_name, "Consumi e rifornimenti")
+        table_storico = get_user_table_name(user_id, business_name, "Storico vino")  # ← NUOVO
         
         # Verifica se almeno una tabella esiste
-        table_name_check = f"{telegram_id}/{business_name} INVENTARIO"
+        table_name_check = f"{user_id}/{business_name} INVENTARIO"
         check_table = sql_text("""
             SELECT table_name 
             FROM information_schema.tables 
@@ -223,11 +238,11 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
             
             # Crea indici per performance (esegui separatamente per asyncpg)
             indexes = [
-                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_name ON {table_inventario} (name)",
-                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_winery ON {table_inventario} (producer)",
-                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_vintage ON {table_inventario} (vintage)",
-                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_type ON {table_inventario} (wine_type)",
-                f"CREATE INDEX IF NOT EXISTS idx_{telegram_id}_updated ON {table_inventario} (updated_at)"
+                f"CREATE INDEX IF NOT EXISTS idx_{user_id}_name ON {table_inventario} (name)",
+                f"CREATE INDEX IF NOT EXISTS idx_{user_id}_winery ON {table_inventario} (producer)",
+                f"CREATE INDEX IF NOT EXISTS idx_{user_id}_vintage ON {table_inventario} (vintage)",
+                f"CREATE INDEX IF NOT EXISTS idx_{user_id}_type ON {table_inventario} (wine_type)",
+                f"CREATE INDEX IF NOT EXISTS idx_{user_id}_updated ON {table_inventario} (updated_at)"
             ]
             for index_sql in indexes:
                 await session.execute(sql_text(index_sql))
@@ -275,7 +290,38 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
             """)
             await session.execute(create_consumi)
             
-            logger.info(f"Created tables for {telegram_id}/{business_name}: INVENTARIO, INVENTARIO backup, LOG interazione, Consumi e rifornimenti")
+            # Crea tabella Storico vino (NUOVO)
+            create_storico = sql_text(f"""
+                CREATE TABLE IF NOT EXISTS {table_storico} (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                    wine_name VARCHAR(200) NOT NULL,
+                    wine_producer VARCHAR(200),
+                    wine_vintage INTEGER,
+                    current_stock INTEGER NOT NULL DEFAULT 0,
+                    history JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    first_movement_date TIMESTAMP,
+                    last_movement_date TIMESTAMP,
+                    total_consumi INTEGER DEFAULT 0,
+                    total_rifornimenti INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, wine_name, wine_producer, wine_vintage)
+                )
+            """)
+            await session.execute(create_storico)
+            
+            # Indici per Storico vino
+            indexes_storico = [
+                f"CREATE INDEX IF NOT EXISTS idx_{user_id}_storico_wine_name ON {table_storico} (wine_name)",
+                f"CREATE INDEX IF NOT EXISTS idx_{user_id}_storico_wine_producer ON {table_storico} (wine_producer)",
+                f"CREATE INDEX IF NOT EXISTS idx_{user_id}_storico_last_movement ON {table_storico} (last_movement_date)",
+                f"CREATE INDEX IF NOT EXISTS idx_{user_id}_storico_history_gin ON {table_storico} USING GIN (history)"
+            ]
+            for index_sql in indexes_storico:
+                await session.execute(sql_text(index_sql))
+            
+            logger.info(f"Created tables for {user_id}/{business_name}: INVENTARIO, INVENTARIO backup, LOG interazione, Consumi e rifornimenti, Storico vino")
         else:
             # Tabella esiste già - verifica colonna supplier
             try:
@@ -296,17 +342,61 @@ async def ensure_user_tables(session, telegram_id: int, business_name: str) -> d
             except Exception as e:
                 logger.warning(f"Error checking/adding supplier column for {table_inventario}: {e}")
             
-            logger.info(f"Tables already exist for {telegram_id}/{business_name}")
+            # Verifica se tabella Storico vino esiste, altrimenti creala
+            check_storico = sql_text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_name = :table_name
+            """)
+            result_storico = await session.execute(check_storico, {"table_name": f"{user_id}/{business_name} Storico vino"})
+            storico_exists = result_storico.scalar_one_or_none()
+            
+            if not storico_exists:
+                # Crea tabella Storico vino se non esiste
+                create_storico = sql_text(f"""
+                    CREATE TABLE IF NOT EXISTS {table_storico} (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                        wine_name VARCHAR(200) NOT NULL,
+                        wine_producer VARCHAR(200),
+                        wine_vintage INTEGER,
+                        current_stock INTEGER NOT NULL DEFAULT 0,
+                        history JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        first_movement_date TIMESTAMP,
+                        last_movement_date TIMESTAMP,
+                        total_consumi INTEGER DEFAULT 0,
+                        total_rifornimenti INTEGER DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(user_id, wine_name, wine_producer, wine_vintage)
+                    )
+                """)
+                await session.execute(create_storico)
+                
+                # Indici per Storico vino
+                indexes_storico = [
+                    f"CREATE INDEX IF NOT EXISTS idx_{user_id}_storico_wine_name ON {table_storico} (wine_name)",
+                    f"CREATE INDEX IF NOT EXISTS idx_{user_id}_storico_wine_producer ON {table_storico} (wine_producer)",
+                    f"CREATE INDEX IF NOT EXISTS idx_{user_id}_storico_last_movement ON {table_storico} (last_movement_date)",
+                    f"CREATE INDEX IF NOT EXISTS idx_{user_id}_storico_history_gin ON {table_storico} USING GIN (history)"
+                ]
+                for index_sql in indexes_storico:
+                    await session.execute(sql_text(index_sql))
+                
+                logger.info(f"Created table Storico vino for {user_id}/{business_name}")
+            
+            logger.info(f"Tables already exist for {user_id}/{business_name}")
         
         return {
             "inventario": table_inventario,
             "backup": table_backup,
             "log": table_log,
-            "consumi": table_consumi
+            "consumi": table_consumi,
+            "storico": table_storico  # ← NUOVO
         }
         
     except Exception as e:
-        logger.error(f"Error ensuring user tables for {telegram_id}/{business_name}: {e}")
+        logger.error(f"Error ensuring user tables for {user_id}/{business_name}: {e}")
         raise
 
 

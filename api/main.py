@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from core.config import get_config, validate_config
-from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables, AsyncSessionLocal
+from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables_from_telegram_id, AsyncSessionLocal
 from core.logger import setup_colored_logging
 from core.scheduler import start_scheduler, shutdown_scheduler
 from api.routers import ingest, snapshot
@@ -259,7 +259,7 @@ async def create_user_tables(
     """
     try:
         async for db in get_db():
-            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
             
             logger.info(
                 f"Tabelle create per telegram_id={telegram_id}, "

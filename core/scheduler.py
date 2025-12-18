@@ -14,7 +14,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select, text as sql_text
 
-from core.database import AsyncSessionLocal, User, ensure_user_tables
+from core.database import AsyncSessionLocal, User, ensure_user_tables_from_telegram_id
 from core.config import get_config
 from telegram_notifier import send_telegram_message
 
@@ -63,7 +63,7 @@ async def generate_daily_movements_report(
                 return None
             
             # Assicura tabelle esistano
-            user_tables = await ensure_user_tables(session, telegram_id, business_name)
+            user_tables = await ensure_user_tables_from_telegram_id(session, telegram_id, business_name)
             table_consumi = user_tables["consumi"]
             
             # Calcola range giornata (00:00 - 23:59 ora italiana)

@@ -15,7 +15,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db, batch_insert_wines, ensure_user_tables, User
+from core.database import get_db, batch_insert_wines, ensure_user_tables_from_telegram_id, User
 from core.job_manager import create_job, get_job_by_client_msg_id, update_job_status
 from core.logger import log_with_context
 from ingest.pipeline import process_file
@@ -184,7 +184,7 @@ async def process_inventory_background(
                 
                 try:
                     # Assicura che tabelle esistano
-                    user_tables = await ensure_user_tables(db, telegram_id, business_name)
+                    user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
                     table_inventario = user_tables["inventario"]
                     
                     # Trova utente per user_id

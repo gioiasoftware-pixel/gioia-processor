@@ -15,7 +15,7 @@ from pydantic import BaseModel
 import base64
 from sqlalchemy import select, text as sql_text
 
-from core.database import get_db, User, ensure_user_tables, batch_insert_wines
+from core.database import get_db, User, ensure_user_tables_from_telegram_id, batch_insert_wines
 from core.logger import log_with_context
 from core.scheduler import generate_daily_movements_report, send_daily_reports_to_all_users
 from telegram_notifier import send_telegram_message
@@ -166,7 +166,7 @@ async def admin_insert_inventory(
         
         async for db in get_db():
             # Crea/verifica utente e tabelle
-            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
             table_inventario = user_tables["inventario"]
             
             log_with_context(
@@ -653,7 +653,7 @@ async def update_wine_field(
                 raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
             
             # Assicura esistenza tabelle
-            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
             table_inventario = user_tables["inventario"]
             
             # Verifica che il vino esista
@@ -752,7 +752,7 @@ async def update_wine_field_with_movement(
                 raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
             
             # Assicura esistenza tabelle
-            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
             table_inventario = user_tables["inventario"]
             table_consumi = user_tables["consumi"]
             
@@ -981,7 +981,7 @@ async def add_wine(
                 raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
             
             # Assicura esistenza tabelle
-            user_tables = await ensure_user_tables(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
             table_inventario = user_tables["inventario"]
             
             # Prepara dati vino
