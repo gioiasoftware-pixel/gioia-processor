@@ -26,7 +26,7 @@ class User(Base):
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False, index=True)
+    telegram_id = Column(Integer, unique=True, nullable=True, index=True)  # Nullable per utenti senza telegram
     username = Column(String(100))
     first_name = Column(String(100))
     last_name = Column(String(100))
@@ -143,6 +143,47 @@ def get_user_table_name(user_id: int, business_name: str, table_type: str) -> st
     
     table_name = f'"{user_id}/{business_name} {table_type}"'
     return table_name
+
+
+async def find_or_create_user_by_business_name(session, business_name: str) -> User:
+    """
+    Cerca o crea un utente con solo business_name (senza telegram_id).
+    Utile per caricamento inventari da admin bot senza telegram_id.
+    
+    Args:
+        session: Sessione database
+        business_name: Nome business
+        
+    Returns:
+        User object
+    """
+    if not business_name or len(business_name.strip()) == 0:
+        raise ValueError("business_name è obbligatorio")
+    
+    # Cerca utente esistente con questo business_name e senza telegram_id
+    stmt = select(User).where(
+        User.business_name == business_name,
+        User.telegram_id.is_(None)
+    )
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+    
+    if user:
+        logger.info(f"Utente trovato per business_name={business_name}: user_id={user.id}")
+        return user
+    
+    # Crea nuovo utente con solo business_name
+    user = User(
+        telegram_id=None,
+        business_name=business_name,
+        onboarding_completed=True
+    )
+    session.add(user)
+    await session.flush()
+    await session.refresh(user)
+    
+    logger.info(f"Nuovo utente creato per business_name={business_name}: user_id={user.id}")
+    return user
 
 
 async def ensure_user_tables_from_telegram_id(session, telegram_id: int, business_name: str) -> dict:

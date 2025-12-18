@@ -15,7 +15,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db, batch_insert_wines, ensure_user_tables_from_telegram_id, User
+from core.database import get_db, batch_insert_wines, ensure_user_tables_from_telegram_id, ensure_user_tables, find_or_create_user_by_business_name, User
 from core.job_manager import create_job, get_job_by_client_msg_id, update_job_status
 from core.logger import log_with_context
 from ingest.pipeline import process_file
@@ -27,11 +27,11 @@ router = APIRouter(tags=["ingest"])
 
 async def process_inventory_background(
     job_id: str,
-    telegram_id: int,
     business_name: str,
     file_type: str,
     file_content: bytes,
     file_name: str,
+    telegram_id: Optional[int] = None,  # Opzionale: solo per retrocompatibilità
     correlation_id: Optional[str] = None,
     mode: str = "add",  # "add" o "replace"
     dry_run: bool = False  # Se True, solo anteprima senza salvare
@@ -43,11 +43,11 @@ async def process_inventory_background(
     
     Args:
         job_id: ID job elaborazione
-        telegram_id: ID Telegram utente
-        business_name: Nome business
+        business_name: Nome business (obbligatorio)
         file_type: Tipo file (csv, excel, xlsx, xls, image, jpg, jpeg, png, pdf)
         file_content: Contenuto file (bytes)
         file_name: Nome file
+        telegram_id: ID Telegram utente (opzionale, solo per retrocompatibilità)
         correlation_id: ID correlazione per logging
         mode: Modalità salvataggio ("add" o "replace")
         dry_run: Se True, solo anteprima senza salvare
@@ -64,8 +64,8 @@ async def process_inventory_background(
             
             log_with_context(
                 "info",
-                f"Job {job_id}: Started processing for telegram_id: {telegram_id}",
-                telegram_id=telegram_id,
+                f"Job {job_id}: Started processing for business_name: {business_name}, telegram_id: {telegram_id or 'N/A'}",
+                telegram_id=telegram_id,  # Può essere None
                 correlation_id=correlation_id
             )
             
@@ -183,24 +183,32 @@ async def process_inventory_background(
                 errors_log = []
                 
                 try:
-                    # Assicura che tabelle esistano
-                    user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
+                    # Trova o crea utente
+                    if telegram_id:
+                        # Caso retrocompatibilità: usa telegram_id
+                        stmt = select(User).where(User.telegram_id == telegram_id)
+                        result = await db.execute(stmt)
+                        user = result.scalar_one_or_none()
+                        
+                        if not user:
+                            # Crea nuovo utente con telegram_id
+                            user = User(
+                                telegram_id=telegram_id,
+                                business_name=business_name,
+                                onboarding_completed=True
+                            )
+                            db.add(user)
+                            await db.flush()
+                        
+                        # Assicura che tabelle esistano (usa helper per retrocompatibilità)
+                        user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
+                    else:
+                        # Nuovo caso: solo business_name, senza telegram_id
+                        user = await find_or_create_user_by_business_name(db, business_name)
+                        # Assicura che tabelle esistano usando user_id direttamente
+                        user_tables = await ensure_user_tables(db, user.id, business_name)
+                    
                     table_inventario = user_tables["inventario"]
-                    
-                    # Trova utente per user_id
-                    stmt = select(User).where(User.telegram_id == telegram_id)
-                    result = await db.execute(stmt)
-                    user = result.scalar_one_or_none()
-                    
-                    if not user:
-                        # Crea nuovo utente se non esiste
-                        user = User(
-                            telegram_id=telegram_id,
-                            business_name=business_name,
-                            onboarding_completed=True
-                        )
-                        db.add(user)
-                        await db.flush()
                     
                     # Se mode='replace', elimina tutti i vini esistenti
                     if mode == "replace":
@@ -231,7 +239,7 @@ async def process_inventory_background(
                     from core.alerting import log_error_and_notify_admin
                     await log_error_and_notify_admin(
                         message=f"Job {job_id}: Database error: {db_error}",
-                        telegram_id=telegram_id,
+                        telegram_id=telegram_id,  # Può essere None
                         correlation_id=correlation_id,
                         component="gioia-processor",
                         error_type="database_error",
@@ -261,7 +269,8 @@ async def process_inventory_background(
                     "saved_wines": saved_count,
                     "error_count": error_count,
                     "business_name": business_name,
-                    "telegram_id": telegram_id,
+                    "user_id": user.id,
+                    "telegram_id": telegram_id if telegram_id else None,
                     "ai_enhanced": ai_enabled,
                     "processing_method": processing_method,
                     "stage_used": stage_used,
@@ -560,10 +569,10 @@ async def process_inventory_background(
 
 @router.post("/process-inventory")
 async def process_inventory_endpoint(
-    telegram_id: int = Form(...),
     business_name: str = Form(...),
     file_type: str = Form(...),
     file: UploadFile = File(...),
+    telegram_id: Optional[int] = Form(None),  # Opzionale: solo per retrocompatibilità
     client_msg_id: Optional[str] = Form(None),  # Opzionale: per idempotenza
     correlation_id: Optional[str] = Form(None),  # Opzionale: per logging
     mode: str = Form("add"),  # "add" o "replace" - modalità import
@@ -574,19 +583,29 @@ async def process_inventory_endpoint(
     L'elaborazione avviene in background usando la nuova pipeline.
     Supporta idempotenza tramite client_msg_id.
     
+    Args:
+        business_name: Nome business (obbligatorio)
+        file_type: Tipo file (obbligatorio)
+        file: File inventario (obbligatorio)
+        telegram_id: ID Telegram utente (opzionale, solo per retrocompatibilità)
+        client_msg_id: ID messaggio client per idempotenza (opzionale)
+        correlation_id: ID correlazione per logging (opzionale)
+        mode: Modalità salvataggio "add" o "replace" (default: "add")
+        dry_run: Se True, solo anteprima senza salvare (default: False)
+    
     Conforme a "Update processor.md" - Endpoint /process-inventory.
     """
     try:
         log_with_context(
             "info",
-            f"Creating job for telegram_id: {telegram_id}, business: {business_name}, type: {file_type}",
+            f"Creating job for business: {business_name}, type: {file_type}, telegram_id: {telegram_id or 'N/A'}",
             telegram_id=telegram_id,
             correlation_id=correlation_id
         )
         
         # Validazione input
-        if not telegram_id or telegram_id <= 0:
-            raise HTTPException(status_code=400, detail="Invalid telegram_id")
+        if telegram_id and telegram_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid telegram_id (must be positive if provided)")
         
         if not business_name or len(business_name.strip()) == 0:
             raise HTTPException(status_code=400, detail="Business name is required")
@@ -605,7 +624,9 @@ async def process_inventory_endpoint(
             raise HTTPException(status_code=413, detail="File too large (max 10MB)")
         
         # IDEMPOTENZA: Controlla se job esiste già con stesso client_msg_id
-        if client_msg_id:
+        # Nota: usa telegram_id=0 se non fornito (valore fittizio per ProcessingJob)
+        telegram_id_for_job = telegram_id if telegram_id else 0
+        if client_msg_id and telegram_id:
             async for db in get_db():
                 existing_job = await get_job_by_client_msg_id(db, telegram_id, client_msg_id)
                 if existing_job:
@@ -640,10 +661,12 @@ async def process_inventory_endpoint(
                 break
         
         # Crea nuovo job
+        # Nota: usa telegram_id=0 se non fornito (valore fittizio per ProcessingJob, 
+        # che ancora richiede telegram_id ma useremo user_id in futuro)
         async for db in get_db():
             job_id = await create_job(
                 db,
-                telegram_id=telegram_id,
+                telegram_id=telegram_id_for_job,
                 business_name=business_name,
                 file_type=file_type.lower(),
                 file_name=file.filename or "inventario",

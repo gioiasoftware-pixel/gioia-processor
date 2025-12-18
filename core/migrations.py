@@ -85,7 +85,7 @@ async def migrate_wine_history():
                     logger.info(f"[MIGRATION] ✓ Tabella Storico vino già esistente: {table_storico_name}")
                 
                 # Nome tabella consumi (formato user_id)
-                table_consumi_name = f'"{user_id}/{user_business_name} Consumi e rifornimenti"'
+                table_consumi_name = f'"{user.id}/{user.business_name} Consumi e rifornimenti"'
                 
                 # Leggi tutti i movimenti per questo utente
                 query_movements = sql_text(f"""
@@ -102,11 +102,11 @@ async def migrate_wine_history():
                     ORDER BY movement_date ASC
                 """)
                 
-                result = await db.execute(query_movements, {"user_id": user_id})
+                result = await db.execute(query_movements, {"user_id": user.id})
                 movements = result.fetchall()
                 
                 if not movements:
-                    logger.info(f"[MIGRATION] Nessun movimento per utente {user.id} - tabella Storico vino creata ma vuota")
+                    logger.info(f"[MIGRATION] Nessun movimento per utente {user_id} - tabella Storico vino creata ma vuota")
                     # Commit per assicurarsi che la tabella creata sia persistita
                     await db.commit()
                     continue
@@ -165,7 +165,7 @@ async def migrate_wine_history():
                         LIMIT 1
                     """)
                     result = await db.execute(check_existing, {
-                        "user_id": user_id,
+                        "user_id": user.id,
                         "wine_name": wine_data["wine_name"],
                         "wine_producer": wine_data["wine_producer"]
                     })
@@ -203,7 +203,7 @@ async def migrate_wine_history():
                                     :first_date, :last_date, :total_consumi, :total_rifornimenti)
                         """)
                         await db.execute(insert_storico, {
-                            "user_id": user.id,
+                            "user_id": user_id,
                             "wine_name": wine_data["wine_name"],
                             "wine_producer": wine_data["wine_producer"],
                             "current_stock": wine_data["current_stock"],
@@ -216,14 +216,17 @@ async def migrate_wine_history():
                 
                 await db.commit()
                 logger.info(
-                    f"[MIGRATION] Migrati {len(wines_dict)} vini per utente {user.id} "
+                    f"[MIGRATION] Migrati {len(wines_dict)} vini per utente {user_id} "
                     f"({len(movements)} movimenti totali)"
                 )
                 
             except Exception as e:
-                await db.rollback()
+                try:
+                    await db.rollback()
+                except Exception as rollback_error:
+                    logger.warning(f"[MIGRATION] Errore durante rollback per utente {user_id}: {rollback_error}")
                 logger.error(
-                    f"[MIGRATION] Errore migrazione utente {user.id}: {e}",
+                    f"[MIGRATION] Errore migrazione utente {user_id}: {e}",
                     exc_info=True
                 )
                 continue
