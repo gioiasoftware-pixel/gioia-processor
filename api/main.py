@@ -65,21 +65,17 @@ async def run_auto_migrations():
     async for db in get_db():
         try:
             # Migrazione 004: Popola Storico vino
-            # Controlla se ci sono utenti con movimenti ma senza storico
+            # Controlla se ci sono utenti senza tabella Storico vino
+            # Nota: information_schema.tables.table_name NON contiene virgolette nel nome
             check_004 = sql_text("""
                 SELECT COUNT(DISTINCT u.id)
                 FROM users u
-                WHERE EXISTS (
-                    SELECT 1 
-                    FROM information_schema.tables t
-                    WHERE t.table_schema = 'public'
-                    AND t.table_name LIKE '"' || u.id || '/% Consumi e rifornimenti"'
-                )
+                WHERE u.business_name IS NOT NULL
                 AND NOT EXISTS (
                     SELECT 1 
                     FROM information_schema.tables t2
                     WHERE t2.table_schema = 'public'
-                    AND t2.table_name LIKE '"' || u.id || '/% Storico vino"'
+                    AND t2.table_name = u.id::text || '/' || u.business_name || ' Storico vino'
                 )
             """)
             result = await db.execute(check_004)
