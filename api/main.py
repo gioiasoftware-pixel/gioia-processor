@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from core.config import get_config, validate_config
 from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables_from_telegram_id, AsyncSessionLocal
+from sqlalchemy import text as sql_text
 from core.logger import setup_colored_logging
 from core.scheduler import start_scheduler, shutdown_scheduler
 from api.routers import ingest, snapshot
@@ -46,6 +47,83 @@ app.include_router(diagnostics.router)
 app.include_router(admin.router)  # /admin/* endpoints
 
 
+async def run_auto_migrations():
+    """
+    Esegue migrazioni automatiche se non già completate.
+    Controlla se le migrazioni sono necessarie prima di eseguirle.
+    """
+    import importlib.util
+    import sys
+    import os
+    
+    logger.info("[AUTO-MIGRATION] Verifica migrazioni necessarie...")
+    
+    async for db in get_db():
+        try:
+            # Migrazione 005: Rinomina tabelle da telegram_id a user_id
+            # Controlla se ci sono ancora tabelle con formato telegram_id
+            check_005 = sql_text("""
+                SELECT COUNT(*) 
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                AND table_name ~ '^"[0-9]+/'
+            """)
+            result = await db.execute(check_005)
+            count_old_tables = result.scalar() or 0
+            
+            if count_old_tables > 0:
+                logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 005: {count_old_tables} tabelle da migrare")
+                # Importa ed esegue migrazione 005 usando importlib
+                migrations_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "migrations", "005_migrate_telegram_to_user_id.py")
+                spec_005 = importlib.util.spec_from_file_location("migrate_005", migrations_path)
+                module_005 = importlib.util.module_from_spec(spec_005)
+                sys.modules["migrate_005"] = module_005
+                spec_005.loader.exec_module(module_005)
+                await module_005.migrate_tables_telegram_to_user_id()
+                logger.info("[AUTO-MIGRATION] Migrazione 005 completata")
+            else:
+                logger.info("[AUTO-MIGRATION] Migrazione 005 non necessaria (nessuna tabella con formato telegram_id)")
+            
+            # Migrazione 004: Popola Storico vino
+            # Controlla se ci sono utenti con movimenti ma senza storico
+            check_004 = sql_text("""
+                SELECT COUNT(DISTINCT u.id)
+                FROM users u
+                WHERE EXISTS (
+                    SELECT 1 
+                    FROM information_schema.tables t
+                    WHERE t.table_schema = 'public'
+                    AND t.table_name LIKE '"' || u.id || '/% Consumi e rifornimenti"'
+                )
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM information_schema.tables t2
+                    WHERE t2.table_schema = 'public'
+                    AND t2.table_name LIKE '"' || u.id || '/% Storico vino"'
+                )
+            """)
+            result = await db.execute(check_004)
+            count_users_needing_migration = result.scalar() or 0
+            
+            if count_users_needing_migration > 0:
+                logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 004: {count_users_needing_migration} utenti da migrare")
+                # Importa ed esegue migrazione 004 usando importlib
+                migrations_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "migrations", "004_migrate_wine_history.py")
+                spec_004 = importlib.util.spec_from_file_location("migrate_004", migrations_path)
+                module_004 = importlib.util.module_from_spec(spec_004)
+                sys.modules["migrate_004"] = module_004
+                spec_004.loader.exec_module(module_004)
+                await module_004.migrate_wine_history()
+                logger.info("[AUTO-MIGRATION] Migrazione 004 completata")
+            else:
+                logger.info("[AUTO-MIGRATION] Migrazione 004 non necessaria (tutti gli utenti hanno già Storico vino)")
+            
+            break
+        except Exception as e:
+            logger.error(f"[AUTO-MIGRATION] Errore durante migrazione: {e}", exc_info=True)
+            raise
+
+
 @app.on_event("startup")
 async def startup_event():
     """Inizializza database e configurazione al startup"""
@@ -57,6 +135,12 @@ async def startup_event():
         # Crea tabelle database
         await create_tables()
         logger.info("Database tables created successfully")
+        
+        # Esegui migrazioni automatiche (se non già eseguite)
+        try:
+            await run_auto_migrations()
+        except Exception as migrate_error:
+            logger.warning(f"Auto-migration failed (continuing anyway): {migrate_error}", exc_info=True)
         
         # Carica termini problematici appresi dal database
         try:
@@ -117,16 +201,6 @@ async def startup_event():
                 pass  # Non bloccare startup se notifica fallisce
         except Exception:
             pass  # Non bloccare startup se import fallisce
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup al shutdown del server"""
-    try:
-        shutdown_scheduler()
-        logger.info("Scheduler fermato durante shutdown")
-    except Exception as e:
-        logger.warning(f"Error during scheduler shutdown: {e}")
 
 
 @app.get("/health")
