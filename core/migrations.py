@@ -132,14 +132,19 @@ async def migrate_wine_history():
                     logger.info(f"[MIGRATION] Skip utente {user.id}: telegram_id o business_name mancante")
                     continue
                 
+                logger.info(f"[MIGRATION] Processo utente {user.id} (telegram_id={user.telegram_id}, business_name={user.business_name})")
+                
                 # Assicura che tabelle esistano (crea "Storico vino" se non esiste)
+                # IMPORTANTE: Questo crea la tabella "Storico vino" anche se non esiste
                 user_tables = await ensure_user_tables_from_telegram_id(db, user.telegram_id, user.business_name)
                 table_consumi = user_tables["consumi"]
                 table_storico = user_tables.get("storico")
                 
                 if not table_storico:
-                    logger.warning(f"[MIGRATION] Tabella Storico vino non creata per utente {user.id}")
+                    logger.error(f"[MIGRATION] ✗✗✗ Tabella Storico vino non creata per utente {user.id} - questo non dovrebbe succedere!")
                     continue
+                
+                logger.info(f"[MIGRATION] ✓ Tabella Storico vino verificata/creata: {table_storico}")
                 
                 # Leggi tutti i movimenti per questo utente
                 query_movements = sql_text(f"""
@@ -160,7 +165,9 @@ async def migrate_wine_history():
                 movements = result.fetchall()
                 
                 if not movements:
-                    logger.info(f"[MIGRATION] Nessun movimento per utente {user.id}")
+                    logger.info(f"[MIGRATION] Nessun movimento per utente {user.id} - tabella Storico vino creata ma vuota")
+                    # Commit per assicurarsi che la tabella creata sia persistita
+                    await db.commit()
                     continue
                 
                 # Raggruppa per vino (wine_name + wine_producer)
