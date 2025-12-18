@@ -75,7 +75,12 @@ async def run_auto_migrations():
             if count_old_tables > 0:
                 logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 005: {count_old_tables} tabelle da migrare")
                 # Importa ed esegue migrazione 005 usando importlib
-                migrations_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "migrations", "005_migrate_telegram_to_user_id.py")
+                # Costruisci percorso assoluto: api/main.py -> gioia-processor -> migrations
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                migrations_path = os.path.join(base_dir, "migrations", "005_migrate_telegram_to_user_id.py")
+                if not os.path.exists(migrations_path):
+                    logger.error(f"[AUTO-MIGRATION] File migrazione non trovato: {migrations_path}")
+                    raise FileNotFoundError(f"File migrazione non trovato: {migrations_path}")
                 spec_005 = importlib.util.spec_from_file_location("migrate_005", migrations_path)
                 module_005 = importlib.util.module_from_spec(spec_005)
                 sys.modules["migrate_005"] = module_005
@@ -109,7 +114,12 @@ async def run_auto_migrations():
             if count_users_needing_migration > 0:
                 logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 004: {count_users_needing_migration} utenti da migrare")
                 # Importa ed esegue migrazione 004 usando importlib
-                migrations_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "migrations", "004_migrate_wine_history.py")
+                # Costruisci percorso assoluto: api/main.py -> gioia-processor -> migrations
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                migrations_path = os.path.join(base_dir, "migrations", "004_migrate_wine_history.py")
+                if not os.path.exists(migrations_path):
+                    logger.error(f"[AUTO-MIGRATION] File migrazione non trovato: {migrations_path}")
+                    raise FileNotFoundError(f"File migrazione non trovato: {migrations_path}")
                 spec_004 = importlib.util.spec_from_file_location("migrate_004", migrations_path)
                 module_004 = importlib.util.module_from_spec(spec_004)
                 sys.modules["migrate_004"] = module_004
