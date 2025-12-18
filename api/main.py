@@ -52,37 +52,62 @@ async def run_auto_migrations():
     Esegue migrazioni automatiche se non già completate.
     Controlla se le migrazioni sono necessarie prima di eseguirle.
     """
-    import importlib
+    import importlib.util
     import sys
     import os
     
     logger.info("[AUTO-MIGRATION] Verifica migrazioni necessarie...")
     
-    # Debug: log percorso corrente e struttura directory
-    current_file = os.path.abspath(__file__)
-    base_dir = os.path.dirname(os.path.dirname(current_file))
-    logger.info(f"[AUTO-MIGRATION] File corrente: {current_file}")
-    logger.info(f"[AUTO-MIGRATION] Directory base: {base_dir}")
-    logger.info(f"[AUTO-MIGRATION] Working directory: {os.getcwd()}")
+    def find_migration_file(filename):
+        """
+        Cerca il file di migrazione in modo aggressivo in tutti i percorsi possibili.
+        """
+        current_file = os.path.abspath(__file__)
+        base_dir = os.path.dirname(os.path.dirname(current_file))
+        cwd = os.getcwd()
+        
+        # Lista completa di percorsi da provare
+        search_paths = [
+            # Percorsi relativi a api/main.py
+            os.path.join(base_dir, "migrations", filename),
+            # Percorsi relativi a working directory
+            os.path.join(cwd, "migrations", filename),
+            os.path.join(cwd, filename),
+            # Percorsi assoluti comuni
+            os.path.join("/app", "migrations", filename),
+            os.path.join("/app", filename),
+            # Percorsi relativi
+            os.path.join("migrations", filename),
+            filename,
+            # Cerca ricorsivamente partendo da base_dir
+            *[os.path.join(root, filename) 
+              for root, dirs, files in os.walk(base_dir, topdown=True)
+              if filename in files][:5],  # Limita a primi 5 risultati
+            # Cerca ricorsivamente partendo da cwd
+            *[os.path.join(root, filename) 
+              for root, dirs, files in os.walk(cwd, topdown=True)
+              if filename in files][:5],  # Limita a primi 5 risultati
+        ]
+        
+        logger.info(f"[AUTO-MIGRATION] Cerca file: {filename}")
+        logger.info(f"[AUTO-MIGRATION] Base dir: {base_dir}")
+        logger.info(f"[AUTO-MIGRATION] Working dir: {cwd}")
+        
+        for path in search_paths:
+            abs_path = os.path.abspath(path) if not os.path.isabs(path) else path
+            if os.path.exists(abs_path) and os.path.isfile(abs_path):
+                logger.info(f"[AUTO-MIGRATION] ✓ File trovato: {abs_path}")
+                return abs_path
+            else:
+                logger.debug(f"[AUTO-MIGRATION] ✗ Non trovato: {abs_path}")
+        
+        logger.error(f"[AUTO-MIGRATION] ✗✗✗ File {filename} NON TROVATO in nessun percorso!")
+        logger.error(f"[AUTO-MIGRATION] Percorsi provati: {len(search_paths)}")
+        return None
     
-    # Prova diversi percorsi possibili per migrations
-    possible_paths = [
-        os.path.join(base_dir, "migrations"),
-        os.path.join(os.getcwd(), "migrations"),
-        os.path.join("/app", "migrations"),
-        "migrations"  # Percorso relativo
-    ]
-    
-    migrations_dir = None
-    for path in possible_paths:
-        if os.path.exists(path) and os.path.isdir(path):
-            migrations_dir = path
-            logger.info(f"[AUTO-MIGRATION] Trovata directory migrations: {migrations_dir}")
-            break
-    
-    if not migrations_dir:
-        logger.error(f"[AUTO-MIGRATION] Directory migrations non trovata. Percorsi provati: {possible_paths}")
-        return  # Esci senza errori, le migrazioni verranno eseguite manualmente
+    # Trova i file di migrazione
+    migration_005_path = find_migration_file("005_migrate_telegram_to_user_id.py")
+    migration_004_path = find_migration_file("004_migrate_wine_history.py")
     
     async for db in get_db():
         try:
@@ -100,18 +125,22 @@ async def run_auto_migrations():
             
             if count_old_tables > 0:
                 logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 005: {count_old_tables} tabelle da migrare")
-                # Importa ed esegue migrazione 005 usando importlib
-                migrations_path = os.path.join(migrations_dir, "005_migrate_telegram_to_user_id.py")
-                if not os.path.exists(migrations_path):
-                    logger.error(f"[AUTO-MIGRATION] File migrazione non trovato: {migrations_path}")
-                    logger.error(f"[AUTO-MIGRATION] Contenuto directory {migrations_dir}: {os.listdir(migrations_dir) if os.path.exists(migrations_dir) else 'NON ESISTE'}")
-                    return  # Esci senza errori
-                spec_005 = importlib.util.spec_from_file_location("migrate_005", migrations_path)
-                module_005 = importlib.util.module_from_spec(spec_005)
-                sys.modules["migrate_005"] = module_005
-                spec_005.loader.exec_module(module_005)
-                await module_005.migrate_tables_telegram_to_user_id()
-                logger.info("[AUTO-MIGRATION] Migrazione 005 completata")
+                
+                if not migration_005_path:
+                    logger.error("[AUTO-MIGRATION] ✗✗✗ IMPOSSIBILE eseguire migrazione 005: file non trovato!")
+                    return
+                
+                # Importa ed esegue migrazione 005
+                try:
+                    spec_005 = importlib.util.spec_from_file_location("migrate_005", migration_005_path)
+                    module_005 = importlib.util.module_from_spec(spec_005)
+                    sys.modules["migrate_005"] = module_005
+                    spec_005.loader.exec_module(module_005)
+                    await module_005.migrate_tables_telegram_to_user_id()
+                    logger.info("[AUTO-MIGRATION] ✓✓✓ Migrazione 005 completata con successo!")
+                except Exception as e:
+                    logger.error(f"[AUTO-MIGRATION] ✗✗✗ Errore esecuzione migrazione 005: {e}", exc_info=True)
+                    raise
             else:
                 logger.info("[AUTO-MIGRATION] Migrazione 005 non necessaria (nessuna tabella con formato telegram_id)")
             
@@ -138,17 +167,22 @@ async def run_auto_migrations():
             
             if count_users_needing_migration > 0:
                 logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 004: {count_users_needing_migration} utenti da migrare")
-                # Importa ed esegue migrazione 004 usando importlib
-                migrations_path = os.path.join(migrations_dir, "004_migrate_wine_history.py")
-                if not os.path.exists(migrations_path):
-                    logger.error(f"[AUTO-MIGRATION] File migrazione non trovato: {migrations_path}")
-                    return  # Esci senza errori
-                spec_004 = importlib.util.spec_from_file_location("migrate_004", migrations_path)
-                module_004 = importlib.util.module_from_spec(spec_004)
-                sys.modules["migrate_004"] = module_004
-                spec_004.loader.exec_module(module_004)
-                await module_004.migrate_wine_history()
-                logger.info("[AUTO-MIGRATION] Migrazione 004 completata")
+                
+                if not migration_004_path:
+                    logger.error("[AUTO-MIGRATION] ✗✗✗ IMPOSSIBILE eseguire migrazione 004: file non trovato!")
+                    return
+                
+                # Importa ed esegue migrazione 004
+                try:
+                    spec_004 = importlib.util.spec_from_file_location("migrate_004", migration_004_path)
+                    module_004 = importlib.util.module_from_spec(spec_004)
+                    sys.modules["migrate_004"] = module_004
+                    spec_004.loader.exec_module(module_004)
+                    await module_004.migrate_wine_history()
+                    logger.info("[AUTO-MIGRATION] ✓✓✓ Migrazione 004 completata con successo!")
+                except Exception as e:
+                    logger.error(f"[AUTO-MIGRATION] ✗✗✗ Errore esecuzione migrazione 004: {e}", exc_info=True)
+                    raise
             else:
                 logger.info("[AUTO-MIGRATION] Migrazione 004 non necessaria (tutti gli utenti hanno già Storico vino)")
             
