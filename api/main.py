@@ -14,7 +14,6 @@ from sqlalchemy import select
 
 from core.config import get_config, validate_config
 from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables_from_telegram_id, AsyncSessionLocal
-from sqlalchemy import text as sql_text
 from core.logger import setup_colored_logging
 from core.scheduler import start_scheduler, shutdown_scheduler
 from api.routers import ingest, snapshot
@@ -49,60 +48,10 @@ app.include_router(admin.router)  # /admin/* endpoints
 
 async def run_auto_migrations():
     """
-    Esegue migrazioni automatiche se non già completate.
-    Controlla se le migrazioni sono necessarie prima di eseguirle.
+    Migrazioni automatiche - tutte completate.
+    Nessuna migrazione necessaria al momento.
     """
-    # Importa direttamente le funzioni di migrazione dal modulo core.migrations
-    # Questo è molto più affidabile che cercare file con percorsi
-    try:
-        from core.migrations import migrate_wine_history
-        logger.info("[AUTO-MIGRATION] Funzioni migrazione importate correttamente da core.migrations")
-    except ImportError as e:
-        logger.error(f"[AUTO-MIGRATION] ✗✗✗ IMPOSSIBILE importare funzioni migrazione: {e}")
-        logger.error("[AUTO-MIGRATION] Le migrazioni verranno saltate")
-        return
-    
-    async for db in get_db():
-        try:
-            # Migrazione 004: Popola Storico vino
-            # Controlla se ci sono utenti con tabella "Consumi e rifornimenti" ma senza tabella "Storico vino"
-            # Nota: information_schema.tables.table_name NON contiene virgolette nel nome
-            check_004 = sql_text("""
-                SELECT COUNT(DISTINCT u.id)
-                FROM users u
-                WHERE u.business_name IS NOT NULL
-                AND EXISTS (
-                    SELECT 1 
-                    FROM information_schema.tables t1
-                    WHERE t1.table_schema = 'public'
-                    AND t1.table_name = u.id::text || '/' || u.business_name || ' Consumi e rifornimenti'
-                )
-                AND NOT EXISTS (
-                    SELECT 1 
-                    FROM information_schema.tables t2
-                    WHERE t2.table_schema = 'public'
-                    AND t2.table_name = u.id::text || '/' || u.business_name || ' Storico vino'
-                )
-            """)
-            result = await db.execute(check_004)
-            count_users_needing_migration = result.scalar() or 0
-            
-            if count_users_needing_migration > 0:
-                logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 004: {count_users_needing_migration} utenti da migrare")
-                
-                try:
-                    await migrate_wine_history()
-                    logger.info("[AUTO-MIGRATION] ✓✓✓ Migrazione 004 completata con successo!")
-                except Exception as e:
-                    logger.error(f"[AUTO-MIGRATION] ✗✗✗ Errore esecuzione migrazione 004: {e}", exc_info=True)
-                    raise
-            else:
-                logger.info("[AUTO-MIGRATION] Migrazione 004 non necessaria (tutti gli utenti hanno già Storico vino)")
-            
-            break
-        except Exception as e:
-            logger.error(f"[AUTO-MIGRATION] Errore durante migrazione: {e}", exc_info=True)
-            raise
+    logger.info("[AUTO-MIGRATION] Nessuna migrazione necessaria - tutte le migrazioni sono state completate")
 
 
 @app.on_event("startup")
