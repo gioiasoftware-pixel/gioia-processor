@@ -16,11 +16,12 @@ async def migrate_tables_telegram_to_user_id():
     """
     async for db in get_db():
         # Trova tutte le tabelle che iniziano con un numero (telegram_id)
+        # NOTA: in information_schema.tables i nomi sono SENZA virgolette
         query_tables = sql_text("""
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
-            AND table_name ~ '^"[0-9]+/'
+            AND table_name ~ '^[0-9]+/'
             ORDER BY table_name
         """)
         
@@ -30,7 +31,8 @@ async def migrate_tables_telegram_to_user_id():
         logger.info(f"[MIGRATION] Trovate {len(tables)} tabelle da migrare")
         
         # Pattern per estrarre telegram_id e business_name
-        pattern = re.compile(r'^"(\d+)/([^"]+)\s+(.+)"$')
+        # NOTA: table_name da information_schema NON ha virgolette
+        pattern = re.compile(r'^(\d+)/(.+?)\s+(.+)$')
         
         migrated_count = 0
         error_count = 0

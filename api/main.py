@@ -62,11 +62,12 @@ async def run_auto_migrations():
         try:
             # Migrazione 005: Rinomina tabelle da telegram_id a user_id
             # Controlla se ci sono ancora tabelle con formato telegram_id
+            # NOTA: in information_schema.tables i nomi sono SENZA virgolette
             check_005 = sql_text("""
                 SELECT COUNT(*) 
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
-                AND table_name ~ '^"[0-9]+/'
+                AND table_name ~ '^[0-9]+/'
             """)
             result = await db.execute(check_005)
             count_old_tables = result.scalar() or 0
