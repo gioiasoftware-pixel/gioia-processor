@@ -52,11 +52,37 @@ async def run_auto_migrations():
     Esegue migrazioni automatiche se non già completate.
     Controlla se le migrazioni sono necessarie prima di eseguirle.
     """
-    import importlib.util
+    import importlib
     import sys
     import os
     
     logger.info("[AUTO-MIGRATION] Verifica migrazioni necessarie...")
+    
+    # Debug: log percorso corrente e struttura directory
+    current_file = os.path.abspath(__file__)
+    base_dir = os.path.dirname(os.path.dirname(current_file))
+    logger.info(f"[AUTO-MIGRATION] File corrente: {current_file}")
+    logger.info(f"[AUTO-MIGRATION] Directory base: {base_dir}")
+    logger.info(f"[AUTO-MIGRATION] Working directory: {os.getcwd()}")
+    
+    # Prova diversi percorsi possibili per migrations
+    possible_paths = [
+        os.path.join(base_dir, "migrations"),
+        os.path.join(os.getcwd(), "migrations"),
+        os.path.join("/app", "migrations"),
+        "migrations"  # Percorso relativo
+    ]
+    
+    migrations_dir = None
+    for path in possible_paths:
+        if os.path.exists(path) and os.path.isdir(path):
+            migrations_dir = path
+            logger.info(f"[AUTO-MIGRATION] Trovata directory migrations: {migrations_dir}")
+            break
+    
+    if not migrations_dir:
+        logger.error(f"[AUTO-MIGRATION] Directory migrations non trovata. Percorsi provati: {possible_paths}")
+        return  # Esci senza errori, le migrazioni verranno eseguite manualmente
     
     async for db in get_db():
         try:
@@ -75,12 +101,11 @@ async def run_auto_migrations():
             if count_old_tables > 0:
                 logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 005: {count_old_tables} tabelle da migrare")
                 # Importa ed esegue migrazione 005 usando importlib
-                # Costruisci percorso assoluto: api/main.py -> gioia-processor -> migrations
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                migrations_path = os.path.join(base_dir, "migrations", "005_migrate_telegram_to_user_id.py")
+                migrations_path = os.path.join(migrations_dir, "005_migrate_telegram_to_user_id.py")
                 if not os.path.exists(migrations_path):
                     logger.error(f"[AUTO-MIGRATION] File migrazione non trovato: {migrations_path}")
-                    raise FileNotFoundError(f"File migrazione non trovato: {migrations_path}")
+                    logger.error(f"[AUTO-MIGRATION] Contenuto directory {migrations_dir}: {os.listdir(migrations_dir) if os.path.exists(migrations_dir) else 'NON ESISTE'}")
+                    return  # Esci senza errori
                 spec_005 = importlib.util.spec_from_file_location("migrate_005", migrations_path)
                 module_005 = importlib.util.module_from_spec(spec_005)
                 sys.modules["migrate_005"] = module_005
@@ -114,12 +139,10 @@ async def run_auto_migrations():
             if count_users_needing_migration > 0:
                 logger.info(f"[AUTO-MIGRATION] Esecuzione migrazione 004: {count_users_needing_migration} utenti da migrare")
                 # Importa ed esegue migrazione 004 usando importlib
-                # Costruisci percorso assoluto: api/main.py -> gioia-processor -> migrations
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                migrations_path = os.path.join(base_dir, "migrations", "004_migrate_wine_history.py")
+                migrations_path = os.path.join(migrations_dir, "004_migrate_wine_history.py")
                 if not os.path.exists(migrations_path):
                     logger.error(f"[AUTO-MIGRATION] File migrazione non trovato: {migrations_path}")
-                    raise FileNotFoundError(f"File migrazione non trovato: {migrations_path}")
+                    return  # Esci senza errori
                 spec_004 = importlib.util.spec_from_file_location("migrate_004", migrations_path)
                 module_004 = importlib.util.module_from_spec(spec_004)
                 sys.modules["migrate_004"] = module_004
