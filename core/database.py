@@ -26,7 +26,7 @@ class User(Base):
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=True, index=True)  # Nullable per utenti senza telegram
+    telegram_id = Column(Integer, nullable=True, index=True)  # Nullable per utenti senza telegram (unique via partial index)
     username = Column(String(100))
     first_name = Column(String(100))
     last_name = Column(String(100))
