@@ -172,7 +172,7 @@ async def migrate_wine_history():
                         update_storico = sql_text(f"""
                             UPDATE {table_storico_name}
                             SET current_stock = :current_stock,
-                                history = :history::jsonb,
+                                history = CAST(:history AS jsonb),
                                 total_consumi = :total_consumi,
                                 total_rifornimenti = :total_rifornimenti,
                                 first_movement_date = :first_date,
