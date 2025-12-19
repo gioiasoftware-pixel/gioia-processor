@@ -36,7 +36,7 @@ def get_scheduler() -> AsyncIOScheduler:
 
 
 async def generate_daily_movements_report(
-    telegram_id: int,
+    user_id: int,
     business_name: str,
     report_date: datetime
 ) -> str:
@@ -44,7 +44,7 @@ async def generate_daily_movements_report(
     Genera report movimenti giornaliero per un utente.
     
     Args:
-        telegram_id: ID Telegram utente
+        user_id: ID utente
         business_name: Nome business
         report_date: Data del report (giorno precedente)
     
@@ -54,16 +54,16 @@ async def generate_daily_movements_report(
     async with AsyncSessionLocal() as session:
         try:
             # Trova utente
-            stmt = select(User).where(User.telegram_id == telegram_id)
+            stmt = select(User).where(User.id == user_id)
             result = await session.execute(stmt)
             user = result.scalar_one_or_none()
             
             if not user:
-                logger.warning(f"[DAILY_REPORT] Utente {telegram_id} non trovato")
+                logger.warning(f"[DAILY_REPORT] Utente user_id={user_id} non trovato")
                 return None
             
             # Assicura tabelle esistano
-            user_tables = await ensure_user_tables_from_telegram_id(session, telegram_id, business_name)
+            user_tables = await ensure_user_tables(session, user_id, business_name)
             table_consumi = user_tables["consumi"]
             
             # Calcola range giornata (00:00 - 23:59 ora italiana)
@@ -107,7 +107,7 @@ async def generate_daily_movements_report(
             movements = result.fetchall()
             
             logger.info(
-                f"[DAILY_REPORT] Trovati {len(movements)} movimenti per {telegram_id} "
+                f"[DAILY_REPORT] Trovati {len(movements)} movimenti per user_id={user_id} "
                 f"per data {report_date.strftime('%Y-%m-%d')}"
             )
             
@@ -234,9 +234,9 @@ async def send_daily_reports_to_all_users():
                         skipped_count += 1
                         continue
                     
-                    # Genera report
+                    # Genera report usando user_id
                     report = await generate_daily_movements_report(
-                        telegram_id=user.telegram_id,
+                        user_id=user.id,
                         business_name=user.business_name,
                         report_date=yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
                     )
@@ -244,28 +244,34 @@ async def send_daily_reports_to_all_users():
                     if not report:
                         # Errore generazione report, skip
                         logger.warning(
-                            f"[DAILY_REPORT] Errore generazione report per {user.telegram_id}, skip"
+                            f"[DAILY_REPORT] Errore generazione report per user_id={user.id}, skip"
                         )
                         skipped_count += 1
                         continue
                     
-                    # Invia report via Telegram
-                    success = await send_telegram_message(
-                        telegram_id=user.telegram_id,
-                        message=report,
-                        parse_mode="Markdown"
-                    )
-                    
-                    if success:
-                        sent_count += 1
-                        logger.info(
-                            f"[DAILY_REPORT] Report inviato a {user.telegram_id}/{user.business_name}"
+                    # Invia report via Telegram (usa telegram_id solo per l'invio)
+                    if user.telegram_id:
+                        success = await send_telegram_message(
+                            telegram_id=user.telegram_id,
+                            message=report,
+                            parse_mode="Markdown"
                         )
+                        
+                        if success:
+                            sent_count += 1
+                            logger.info(
+                                f"[DAILY_REPORT] Report inviato a user_id={user.id} (telegram_id={user.telegram_id})/{user.business_name}"
+                            )
+                        else:
+                            error_count += 1
+                            logger.warning(
+                                f"[DAILY_REPORT] Errore invio report a user_id={user.id}"
+                            )
                     else:
-                        error_count += 1
                         logger.warning(
-                            f"[DAILY_REPORT] Errore invio report a {user.telegram_id}"
+                            f"[DAILY_REPORT] Utente user_id={user.id} senza telegram_id, skip invio"
                         )
+                        skipped_count += 1
                     
                     # Piccola pausa tra invii per evitare rate limiting
                     import asyncio
@@ -274,7 +280,7 @@ async def send_daily_reports_to_all_users():
                 except Exception as e:
                     error_count += 1
                     logger.error(
-                        f"[DAILY_REPORT] Errore processamento utente {user.telegram_id}: {e}",
+                        f"[DAILY_REPORT] Errore processamento utente user_id={user.id}: {e}",
                         exc_info=True
                     )
                     continue

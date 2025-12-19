@@ -160,32 +160,32 @@ async def admin_insert_inventory(
         log_with_context(
             "info",
             f"[ADMIN_INSERT] Trovati {len(wines)} vini nel CSV",
-            telegram_id=telegram_id,
+            telegram_id=user_id,  # Mantenuto per retrocompatibilità log
             correlation_id=correlation_id
         )
         
         async for db in get_db():
-            # Crea/verifica utente e tabelle
-            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
-            table_inventario = user_tables["inventario"]
-            
-            log_with_context(
-                "info",
-                f"[ADMIN_INSERT] Tabelle utente verificate/create: {list(user_tables.keys())}",
-                telegram_id=telegram_id,
-                correlation_id=correlation_id
-            )
-            
             # Trova utente per user_id
-            stmt = select(User).where(User.telegram_id == telegram_id)
+            stmt = select(User).where(User.id == user_id)
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
             
             if not user:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Utente {telegram_id} non trovato dopo creazione tabelle"
+                    detail=f"Utente user_id={user_id} non trovato"
                 )
+            
+            # Crea/verifica tabelle usando user_id
+            user_tables = await ensure_user_tables(db, user_id, business_name)
+            table_inventario = user_tables["inventario"]
+            
+            log_with_context(
+                "info",
+                f"[ADMIN_INSERT] Tabelle utente verificate/create: {list(user_tables.keys())}",
+                telegram_id=user_id,  # Mantenuto per retrocompatibilità log
+                correlation_id=correlation_id
+            )
             
             # Se mode='replace', elimina tutti i vini esistenti
             if mode == "replace":
