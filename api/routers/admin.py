@@ -430,7 +430,7 @@ async def admin_trigger_daily_report(
 
 class InsertInventoryJSONRequest(BaseModel):
     """Request model per inserimento inventario via JSON (bypass multipart)"""
-    telegram_id: int
+    telegram_id: Optional[int] = None
     business_name: str
     file_content_base64: str  # CSV content in base64
     mode: str = "add"  # "add" o "replace"
@@ -485,12 +485,31 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
             # Crea/verifica utente e tabelle (crea automaticamente se non esistono)
             log_with_context(
                 "info",
-                f"[ADMIN_INSERT_JSON] Creazione/verifica tabelle per utente {request.telegram_id}/{request.business_name}",
+                f"[ADMIN_INSERT_JSON] Creazione/verifica tabelle per utente {request.telegram_id or 'N/A'}/{request.business_name}",
                 telegram_id=request.telegram_id,
                 correlation_id=correlation_id
             )
             
-            user_tables = await ensure_user_tables(db, request.telegram_id, request.business_name)
+            # Se telegram_id è presente, usa la logica di retrocompatibilità
+            # Altrimenti, crea/ottieni utente solo con business_name
+            if request.telegram_id is not None:
+                user_tables = await ensure_user_tables_from_telegram_id(db, request.telegram_id, request.business_name)
+                # Trova utente per telegram_id
+                stmt = select(User).where(User.telegram_id == request.telegram_id)
+                result = await db.execute(stmt)
+                user = result.scalar_one_or_none()
+                
+                if not user:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Utente telegram_id={request.telegram_id} non trovato dopo creazione tabelle"
+                    )
+            else:
+                # Crea/ottieni utente solo con business_name
+                user = await find_or_create_user_by_business_name(db, request.business_name)
+                # Crea tabelle usando user_id
+                user_tables = await ensure_user_tables(db, user.id, request.business_name)
+            
             table_inventario = user_tables["inventario"]
             
             log_with_context(
@@ -499,17 +518,6 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
                 telegram_id=request.telegram_id,
                 correlation_id=correlation_id
             )
-            
-            # Trova utente per user_id
-            stmt = select(User).where(User.telegram_id == request.telegram_id)
-            result = await db.execute(stmt)
-            user = result.scalar_one_or_none()
-            
-            if not user:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Utente {request.telegram_id} non trovato dopo creazione tabelle"
-                )
             
             # Se mode='replace', elimina tutti i vini esistenti
             if request.mode == "replace":
