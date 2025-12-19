@@ -205,7 +205,7 @@ async def process_movement_background(
             if not wine_row:
                 logger.warning(
                     f"[MOVEMENT] Job {job_id}: ❌ Wine not found in database | "
-                    f"wine_name='{wine_name}', telegram_id={telegram_id}, business_name='{business_name}', "
+                    f"wine_name='{wine_name}', user_id={user_id}, business_name='{business_name}', "
                     f"search_pattern='{wine_name_pattern}', table={table_inventario}"
                 )
                 err = f"Vino '{wine_name}' non trovato"
@@ -500,9 +500,9 @@ async def process_movement_background(
         # Usa funzione helper che logga e notifica admin automaticamente
         from core.alerting import log_error_and_notify_admin
         await log_error_and_notify_admin(
-            message=f"[MOVEMENT] Job {job_id}: {error_msg} | telegram_id={telegram_id}, business={business_name}, "
+            message=f"[MOVEMENT] Job {job_id}: {error_msg} | user_id={user_id}, business={business_name}, "
                     f"wine_name={wine_name}, movement_type={movement_type}, quantity={quantity}",
-            telegram_id=telegram_id,
+            telegram_id=user_id,  # Mantenuto per retrocompatibilità notifiche
             correlation_id=job_id,
             component="gioia-processor",
             error_type="movement_unexpected_error",
