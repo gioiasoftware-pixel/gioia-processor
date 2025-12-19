@@ -16,6 +16,7 @@ from core.config import get_config, validate_config
 from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables_from_telegram_id, AsyncSessionLocal
 from core.logger import setup_colored_logging
 from core.scheduler import start_scheduler, shutdown_scheduler
+from core.migrations import migrate_006_telegram_id_nullable
 from api.routers import ingest, snapshot
 from api.routers import movements, diagnostics, admin
 from ingest.learned_terms_manager import load_learned_terms_set, load_learned_terms_dict
@@ -48,10 +49,22 @@ app.include_router(admin.router)  # /admin/* endpoints
 
 async def run_auto_migrations():
     """
-    Migrazioni automatiche - tutte completate.
-    Nessuna migrazione necessaria al momento.
+    Esegue migrazioni automatiche al startup.
+    Ogni migrazione verifica se è già stata applicata prima di eseguirla.
     """
-    logger.info("[AUTO-MIGRATION] Nessuna migrazione necessaria - tutte le migrazioni sono state completate")
+    logger.info("[AUTO-MIGRATION] Verifica migrazioni necessarie...")
+    
+    # Migrazione 006: telegram_id nullable
+    try:
+        success = await migrate_006_telegram_id_nullable()
+        if success:
+            logger.info("[AUTO-MIGRATION] Migrazione 006: OK")
+        else:
+            logger.warning("[AUTO-MIGRATION] Migrazione 006: Fallita o già applicata")
+    except Exception as e:
+        logger.warning(f"[AUTO-MIGRATION] Errore migrazione 006: {e}", exc_info=True)
+    
+    logger.info("[AUTO-MIGRATION] Verifica migrazioni completata")
 
 
 @app.on_event("startup")

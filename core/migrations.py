@@ -4,10 +4,117 @@ Modulo migrazioni database - funzioni importabili direttamente
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from sqlalchemy import text as sql_text, select
-from core.database import get_db, ensure_user_tables_from_telegram_id, User
+from core.database import get_db, ensure_user_tables_from_telegram_id, User, AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+
+async def check_migration_006_applied(session) -> bool:
+    """
+    Verifica se la migrazione 006 (telegram_id nullable) è già stata applicata.
+    
+    Controlla:
+    1. Se telegram_id è nullable nella tabella users
+    2. Se l'indice unique parziale uq_users_telegram_id esiste
+    
+    Returns:
+        True se migrazione già applicata, False altrimenti
+    """
+    try:
+        # Verifica 1: Controlla se telegram_id è nullable
+        check_nullable = sql_text("""
+            SELECT is_nullable 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public' 
+            AND table_name = 'users' 
+            AND column_name = 'telegram_id'
+        """)
+        result = await session.execute(check_nullable)
+        nullable_result = result.scalar_one_or_none()
+        
+        if nullable_result != 'YES':
+            logger.info("[MIGRATION 006] telegram_id non è nullable - migrazione necessaria")
+            return False
+        
+        # Verifica 2: Controlla se l'indice unique parziale esiste
+        check_index = sql_text("""
+            SELECT indexname 
+            FROM pg_indexes 
+            WHERE tablename = 'users' 
+            AND indexname = 'uq_users_telegram_id'
+        """)
+        result = await session.execute(check_index)
+        index_exists = result.scalar_one_or_none()
+        
+        if not index_exists:
+            logger.info("[MIGRATION 006] Indice unique parziale non trovato - migrazione necessaria")
+            return False
+        
+        logger.info("[MIGRATION 006] Migrazione già applicata (telegram_id nullable e indice presente)")
+        return True
+        
+    except Exception as e:
+        logger.warning(f"[MIGRATION 006] Errore durante verifica migrazione: {e}", exc_info=True)
+        # In caso di errore, assumiamo che la migrazione non sia applicata (safe fallback)
+        return False
+
+
+async def migrate_006_telegram_id_nullable():
+    """
+    Migrazione 006: Rende telegram_id nullable in users.
+    
+    Esegue automaticamente la migrazione SQL solo se non già applicata.
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            # Verifica se migrazione già applicata
+            if await check_migration_006_applied(session):
+                logger.info("[MIGRATION 006] Migrazione già applicata - skip")
+                return True
+            
+            logger.info("[MIGRATION 006] Avvio migrazione: telegram_id nullable")
+            
+            # Leggi file migrazione SQL
+            project_root = Path(__file__).parent.parent
+            migration_file = project_root / "migrations" / "006_make_telegram_id_nullable.sql"
+            
+            if not migration_file.exists():
+                logger.error(f"[MIGRATION 006] File migrazione non trovato: {migration_file}")
+                return False
+            
+            with open(migration_file, 'r', encoding='utf-8') as f:
+                sql_content = f.read()
+            
+            # Rimuovi solo commenti iniziali, mantieni tutto il resto
+            lines = sql_content.split('\n')
+            sql_clean = '\n'.join([
+                line for line in lines 
+                if not line.strip().startswith('--') or 'Esegui con:' in line
+            ])
+            
+            # Esegui migrazione
+            logger.info("[MIGRATION 006] Eseguendo statement SQL...")
+            await session.execute(sql_text(sql_clean))
+            await session.commit()
+            
+            # Verifica che la migrazione sia stata applicata correttamente
+            if await check_migration_006_applied(session):
+                logger.info("[MIGRATION 006] ✅ Migrazione completata con successo!")
+                return True
+            else:
+                logger.error("[MIGRATION 006] ❌ Migrazione eseguita ma verifica fallita")
+                return False
+                
+    except Exception as e:
+        logger.error(f"[MIGRATION 006] ❌ Errore durante migrazione: {e}", exc_info=True)
+        try:
+            async with AsyncSessionLocal() as session:
+                await session.rollback()
+        except:
+            pass
+        return False
 
 
 async def migrate_wine_history():
