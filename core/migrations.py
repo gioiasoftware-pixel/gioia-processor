@@ -65,6 +65,7 @@ async def migrate_006_telegram_id_nullable():
     Migrazione 006: Rende telegram_id nullable in users.
     
     Esegue automaticamente la migrazione SQL solo se non già applicata.
+    Incorpora SQL direttamente nel codice (come migrazione 004) per evitare problemi con file esterni.
     """
     try:
         async with AsyncSessionLocal() as session:
@@ -75,27 +76,56 @@ async def migrate_006_telegram_id_nullable():
             
             logger.info("[MIGRATION 006] Avvio migrazione: telegram_id nullable")
             
-            # Trova file migrazione SQL (cerca in percorsi multipli)
-            try:
-                migration_file = find_migration_file("006_make_telegram_id_nullable.sql")
-                logger.info(f"[MIGRATION 006] File migrazione trovato: {migration_file}")
-            except FileNotFoundError as e:
-                logger.error(f"[MIGRATION 006] {e}")
-                return False
+            # Step 1: Rimuove NOT NULL constraint da telegram_id
+            logger.info("[MIGRATION 006] Rimozione NOT NULL constraint da telegram_id...")
+            await session.execute(sql_text("""
+                ALTER TABLE users 
+                ALTER COLUMN telegram_id DROP NOT NULL
+            """))
+            await session.commit()
             
-            with open(migration_file, 'r', encoding='utf-8') as f:
-                sql_content = f.read()
+            # Step 2: Rimuove unique constraint esistente (se esiste)
+            logger.info("[MIGRATION 006] Rimozione unique constraint esistente...")
+            drop_constraint = sql_text("""
+                DO $$
+                BEGIN
+                    -- Prova a droppare il constraint unique se esiste
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint 
+                        WHERE conname = 'users_telegram_id_key'
+                    ) THEN
+                        ALTER TABLE users DROP CONSTRAINT users_telegram_id_key;
+                    END IF;
+                    
+                    -- Prova a droppare l'indice unique se esiste (potrebbe essere chiamato diversamente)
+                    IF EXISTS (
+                        SELECT 1 FROM pg_indexes 
+                        WHERE tablename = 'users' 
+                        AND indexname LIKE '%telegram_id%unique%'
+                    ) THEN
+                        DROP INDEX IF EXISTS users_telegram_id_key;
+                    END IF;
+                END $$;
+            """)
+            await session.execute(drop_constraint)
+            await session.commit()
             
-            # Rimuovi solo commenti iniziali, mantieni tutto il resto
-            lines = sql_content.split('\n')
-            sql_clean = '\n'.join([
-                line for line in lines 
-                if not line.strip().startswith('--') or 'Esegui con:' in line
-            ])
+            # Step 3: Crea unique index parziale: solo quando telegram_id IS NOT NULL
+            logger.info("[MIGRATION 006] Creazione unique index parziale...")
+            await session.execute(sql_text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_users_telegram_id 
+                ON users (telegram_id)
+                WHERE telegram_id IS NOT NULL
+            """))
+            await session.commit()
             
-            # Esegui migrazione
-            logger.info("[MIGRATION 006] Eseguendo statement SQL...")
-            await session.execute(sql_text(sql_clean))
+            # Step 4: Verifica che l'indice normale esista ancora (per performance)
+            logger.info("[MIGRATION 006] Creazione indice normale per performance...")
+            await session.execute(sql_text("""
+                CREATE INDEX IF NOT EXISTS idx_users_telegram 
+                ON users (telegram_id)
+                WHERE telegram_id IS NOT NULL
+            """))
             await session.commit()
             
             # Verifica che la migrazione sia stata applicata correttamente
