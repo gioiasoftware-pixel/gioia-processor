@@ -107,18 +107,18 @@ async def process_movement_background(
             )
             
             # Costruisci ORDER BY con priorità in base al tipo di ricerca
-            # NOTA: Sostituiamo direttamente il pattern nel ORDER BY perché SQLAlchemy
-            # non gestisce correttamente parametri dentro clausole inserite dinamicamente
-            wine_name_pattern_upper = wine_name_pattern.upper()
-            wine_name_pattern_lower = wine_name_pattern.lower()
+            # NOTA: Usiamo il valore direttamente nel ORDER BY perché SQLAlchemy
+            # non gestisce correttamente parametri dentro clausole inserite dinamicamente.
+            # wine_name_pattern è già sanitizzato (costruito da wine_name utente con %)
+            wine_name_pattern_escaped = wine_name_pattern.replace("'", "''")  # Escape apostrofi per SQL
             
             if is_likely_producer:
                 # Per produttori, producer ha priorità più alta
                 order_by_clause = f"""
                     CASE 
-                        WHEN LOWER(producer) LIKE '{wine_name_pattern_lower}' THEN 1
-                        WHEN LOWER(name) LIKE '{wine_name_pattern_lower}' THEN 2
-                        WHEN LOWER(grape_variety) LIKE '{wine_name_pattern_lower}' THEN 3
+                        WHEN LOWER(producer) LIKE LOWER('{wine_name_pattern_escaped}') THEN 1
+                        WHEN LOWER(name) LIKE LOWER('{wine_name_pattern_escaped}') THEN 2
+                        WHEN LOWER(grape_variety) LIKE LOWER('{wine_name_pattern_escaped}') THEN 3
                         ELSE 4
                     END ASC, name ASC
                 """
@@ -126,9 +126,9 @@ async def process_movement_background(
                 # Per uvaggi, grape_variety ha priorità più alta rispetto a name
                 order_by_clause = f"""
                     CASE 
-                        WHEN LOWER(grape_variety) LIKE '{wine_name_pattern_lower}' THEN 1
-                        WHEN LOWER(producer) LIKE '{wine_name_pattern_lower}' THEN 2
-                        WHEN LOWER(name) LIKE '{wine_name_pattern_lower}' THEN 3
+                        WHEN LOWER(grape_variety) LIKE LOWER('{wine_name_pattern_escaped}') THEN 1
+                        WHEN LOWER(producer) LIKE LOWER('{wine_name_pattern_escaped}') THEN 2
+                        WHEN LOWER(name) LIKE LOWER('{wine_name_pattern_escaped}') THEN 3
                         ELSE 4
                     END ASC, name ASC
                 """
@@ -136,9 +136,9 @@ async def process_movement_background(
                 # Per altri, name ha priorità più alta
                 order_by_clause = f"""
                     CASE 
-                        WHEN LOWER(name) LIKE '{wine_name_pattern_lower}' THEN 1
-                        WHEN LOWER(producer) LIKE '{wine_name_pattern_lower}' THEN 2
-                        WHEN LOWER(grape_variety) LIKE '{wine_name_pattern_lower}' THEN 3
+                        WHEN LOWER(name) LIKE LOWER('{wine_name_pattern_escaped}') THEN 1
+                        WHEN LOWER(producer) LIKE LOWER('{wine_name_pattern_escaped}') THEN 2
+                        WHEN LOWER(grape_variety) LIKE LOWER('{wine_name_pattern_escaped}') THEN 3
                         ELSE 4
                     END ASC, name ASC
                 """
@@ -391,7 +391,7 @@ async def process_movement_background(
                         update_storico = sql_text(f"""
                             UPDATE {table_storico}
                             SET current_stock = :current_stock,
-                                history = :history::jsonb,
+                                history = CAST(:history AS jsonb),
                                 total_consumi = :total_consumi,
                                 total_rifornimenti = :total_rifornimenti,
                                 last_movement_date = :movement_date,
@@ -415,7 +415,7 @@ async def process_movement_background(
                             INSERT INTO {table_storico}
                                 (user_id, wine_name, wine_producer, wine_vintage, current_stock, history,
                                  first_movement_date, last_movement_date, total_consumi, total_rifornimenti)
-                            VALUES (:user_id, :wine_name, :wine_producer, :wine_vintage, :current_stock, :history::jsonb,
+                            VALUES (:user_id, :wine_name, :wine_producer, :wine_vintage, :current_stock, CAST(:history AS jsonb),
                                     :movement_date, :movement_date, :total_consumi, :total_rifornimenti)
                         """)
                         await db.execute(insert_storico, {
