@@ -23,7 +23,7 @@ router = APIRouter(tags=["movements"])  # senza prefix per mantenere /process-mo
 
 async def process_movement_background(
     job_id: str,
-    telegram_id: int,
+    user_id: int,
     business_name: str,
     wine_name: str,
     movement_type: str,  # 'consumo' o 'rifornimento'
@@ -49,24 +49,23 @@ async def process_movement_background(
             log_with_context(
                 "info",
                 f"[MOVEMENT] Job {job_id}: Started processing movement: {movement_type} {quantity} {wine_name}",
-                telegram_id=telegram_id
+                telegram_id=user_id  # Mantenuto per retrocompatibilità log
             )
 
-            # Trova utente
-            stmt = select(User).where(User.telegram_id == telegram_id)
+            # Trova utente per user_id
+            stmt = select(User).where(User.id == user_id)
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
 
             if not user:
                 job.status = 'error'
-                job.error_message = f"Utente {telegram_id} non trovato"
+                job.error_message = f"Utente user_id={user_id} non trovato"
                 job.completed_at = datetime.utcnow()
                 await db.commit()
                 return
 
-            # Assicura tabelle (usa user.id invece di telegram_id)
-            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
-            # Nota: ensure_user_tables_from_telegram_id converte telegram_id a user_id internamente
+            # Assicura tabelle usando user_id direttamente
+            user_tables = await ensure_user_tables(db, user_id, business_name)
             table_inventario = user_tables["inventario"]
             table_consumi = user_tables["consumi"]
             table_storico = user_tables.get("storico")  # Nuova tabella Storico vino
