@@ -107,33 +107,38 @@ async def process_movement_background(
             )
             
             # Costruisci ORDER BY con priorità in base al tipo di ricerca
+            # NOTA: Sostituiamo direttamente il pattern nel ORDER BY perché SQLAlchemy
+            # non gestisce correttamente parametri dentro clausole inserite dinamicamente
+            wine_name_pattern_upper = wine_name_pattern.upper()
+            wine_name_pattern_lower = wine_name_pattern.lower()
+            
             if is_likely_producer:
                 # Per produttori, producer ha priorità più alta
-                order_by_clause = """
+                order_by_clause = f"""
                     CASE 
-                        WHEN LOWER(producer) LIKE LOWER(:wine_name_pattern) THEN 1
-                        WHEN LOWER(name) LIKE LOWER(:wine_name_pattern) THEN 2
-                        WHEN LOWER(grape_variety) LIKE LOWER(:wine_name_pattern) THEN 3
+                        WHEN LOWER(producer) LIKE '{wine_name_pattern_lower}' THEN 1
+                        WHEN LOWER(name) LIKE '{wine_name_pattern_lower}' THEN 2
+                        WHEN LOWER(grape_variety) LIKE '{wine_name_pattern_lower}' THEN 3
                         ELSE 4
                     END ASC, name ASC
                 """
             elif is_likely_grape_variety:
                 # Per uvaggi, grape_variety ha priorità più alta rispetto a name
-                order_by_clause = """
+                order_by_clause = f"""
                     CASE 
-                        WHEN LOWER(grape_variety) LIKE LOWER(:wine_name_pattern) THEN 1
-                        WHEN LOWER(producer) LIKE LOWER(:wine_name_pattern) THEN 2
-                        WHEN LOWER(name) LIKE LOWER(:wine_name_pattern) THEN 3
+                        WHEN LOWER(grape_variety) LIKE '{wine_name_pattern_lower}' THEN 1
+                        WHEN LOWER(producer) LIKE '{wine_name_pattern_lower}' THEN 2
+                        WHEN LOWER(name) LIKE '{wine_name_pattern_lower}' THEN 3
                         ELSE 4
                     END ASC, name ASC
                 """
             else:
                 # Per altri, name ha priorità più alta
-                order_by_clause = """
+                order_by_clause = f"""
                     CASE 
-                        WHEN LOWER(name) LIKE LOWER(:wine_name_pattern) THEN 1
-                        WHEN LOWER(producer) LIKE LOWER(:wine_name_pattern) THEN 2
-                        WHEN LOWER(grape_variety) LIKE LOWER(:wine_name_pattern) THEN 3
+                        WHEN LOWER(name) LIKE '{wine_name_pattern_lower}' THEN 1
+                        WHEN LOWER(producer) LIKE '{wine_name_pattern_lower}' THEN 2
+                        WHEN LOWER(grape_variety) LIKE '{wine_name_pattern_lower}' THEN 3
                         ELSE 4
                     END ASC, name ASC
                 """
