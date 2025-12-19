@@ -3,12 +3,67 @@ Modulo migrazioni database - funzioni importabili direttamente
 """
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy import text as sql_text, select
 from core.database import get_db, ensure_user_tables_from_telegram_id, User, AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+
+def find_migration_file(filename: str) -> Path:
+    """
+    Trova il file di migrazione cercando in percorsi multipli.
+    
+    Cerca in ordine:
+    1. Percorso relativo a __file__ (core/migrations.py -> migrations/)
+    2. Directory corrente di lavoro (cwd/migrations/)
+    3. Percorso assoluto /app/migrations/ (Docker)
+    4. Percorso relativo migrations/ dalla root progetto
+    
+    Returns:
+        Path al file trovato
+        
+    Raises:
+        FileNotFoundError se il file non viene trovato
+    """
+    # Lista di percorsi base da provare
+    base_paths = [
+        Path(__file__).parent.parent / "migrations",  # core/ -> migrations/
+        Path(os.getcwd()) / "migrations",  # Directory corrente
+        Path("/app") / "migrations",  # Docker standard
+        Path("/app/gioia-processor") / "migrations",  # Docker con subdirectory
+    ]
+    
+    # Aggiungi anche percorsi relativi dalla directory corrente
+    current_dir = Path(os.getcwd())
+    if current_dir.name == "gioia-processor":
+        base_paths.insert(1, current_dir / "migrations")
+    elif (current_dir / "gioia-processor").exists():
+        base_paths.insert(1, current_dir / "gioia-processor" / "migrations")
+    
+    # Cerca il file in tutti i percorsi
+    for base_path in base_paths:
+        migration_file = base_path / filename
+        if migration_file.exists() and migration_file.is_file():
+            logger.debug(f"[MIGRATION] File trovato: {migration_file}")
+            return migration_file
+    
+    # Se non trovato, prova a cercare ricorsivamente dalla directory corrente
+    cwd = Path(os.getcwd())
+    for root, dirs, files in os.walk(cwd):
+        if "migrations" in dirs:
+            migration_file = Path(root) / "migrations" / filename
+            if migration_file.exists() and migration_file.is_file():
+                logger.debug(f"[MIGRATION] File trovato (ricerca ricorsiva): {migration_file}")
+                return migration_file
+    
+    # Nessun file trovato
+    searched_paths = [str(p / filename) for p in base_paths]
+    raise FileNotFoundError(
+        f"File migrazione '{filename}' non trovato. Percorsi cercati: {searched_paths}"
+    )
 
 
 async def check_migration_006_applied(session) -> bool:
