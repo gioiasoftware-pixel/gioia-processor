@@ -478,7 +478,7 @@ async def process_movement_background(
                 "quantity": quantity,
                 "quantity_before": quantity_before,
                 "quantity_after": quantity_after,
-                "telegram_id": telegram_id,
+                "user_id": user_id,
                 "business_name": business_name,
                 "processing_time_seconds": round(processing_time, 2)
             }
