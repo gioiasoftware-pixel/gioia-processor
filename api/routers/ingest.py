@@ -62,10 +62,13 @@ async def process_inventory_background(
                 status='processing'
             )
             
+            # Determina telegram_id per logging (user_id può essere usato come telegram_id per retrocompatibilità)
+            telegram_id_for_log = user_id if user_id else None
+            
             log_with_context(
                 "info",
                 f"Job {job_id}: Started processing for business_name: {business_name}, user_id: {user_id or 'N/A'}",
-                telegram_id=user_id,  # Mantenuto per retrocompatibilità log
+                telegram_id=telegram_id_for_log,  # Mantenuto per retrocompatibilità log
                 correlation_id=correlation_id
             )
             
@@ -83,11 +86,15 @@ async def process_inventory_background(
             stage_used = "unknown"
             
             try:
+                # Se user_id è fornito, usa come telegram_id per retrocompatibilità con process_file
+                # (process_file si aspetta telegram_id, ma user_id funziona allo stesso modo)
+                telegram_id_for_pipeline = user_id if user_id else None
+                
                 wines_data, metrics, decision, stage_used = await process_file(
                     file_content=file_content,
                     file_name=file_name,
                     ext=ext,
-                    telegram_id=telegram_id,
+                    telegram_id=telegram_id_for_pipeline,
                     business_name=business_name,
                     correlation_id=correlation_id
                 )
@@ -134,7 +141,7 @@ async def process_inventory_background(
                         
                         await enqueue_admin_notification(
                             event_type="error",
-                            telegram_id=telegram_id,
+                            telegram_id=telegram_id_for_log,
                             payload={
                                 "business_name": business_name,
                                 "error_type": "processing_error",
@@ -143,7 +150,8 @@ async def process_inventory_background(
                                 "component": "gioia-processor",
                                 "file_type": file_type,
                                 "file_size_bytes": len(file_content) if file_content else 0,
-                                "stage_used": stage_used
+                                "stage_used": stage_used,
+                                "user_id": user_id
                             },
                             correlation_id=correlation_id
                         )
@@ -184,8 +192,21 @@ async def process_inventory_background(
                 
                 try:
                     # Trova o crea utente
-                    if telegram_id:
-                        # Caso retrocompatibilità: usa telegram_id
+                    if user_id:
+                        # Caso Control Panel: user_id già esiste nel database (creato da Web App)
+                        # Verifica che l'utente esista
+                        stmt = select(User).where(User.id == user_id)
+                        result = await db.execute(stmt)
+                        user = result.scalar_one_or_none()
+                        
+                        if not user:
+                            raise ValueError(f"Utente con user_id={user_id} non trovato nel database. L'utente deve essere creato prima di processare l'inventario.")
+                        
+                        # Assicura che tabelle esistano usando user_id direttamente
+                        user_tables = await ensure_user_tables(db, user_id, business_name)
+                        logger.info(f"Job {job_id}: Usando utente esistente user_id={user_id}, business_name={business_name}")
+                    elif telegram_id:
+                        # Caso retrocompatibilità: usa telegram_id (per admin bot)
                         stmt = select(User).where(User.telegram_id == telegram_id)
                         result = await db.execute(stmt)
                         user = result.scalar_one_or_none()
@@ -203,7 +224,7 @@ async def process_inventory_background(
                         # Assicura che tabelle esistano (usa helper per retrocompatibilità)
                         user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
                     else:
-                        # Nuovo caso: solo business_name, senza telegram_id
+                        # Nuovo caso: solo business_name, senza telegram_id né user_id (admin bot senza telegram)
                         user = await find_or_create_user_by_business_name(db, business_name)
                         # Assicura che tabelle esistano usando user_id direttamente
                         user_tables = await ensure_user_tables(db, user.id, business_name)
@@ -239,7 +260,7 @@ async def process_inventory_background(
                     from core.alerting import log_error_and_notify_admin
                     await log_error_and_notify_admin(
                         message=f"Job {job_id}: Database error: {db_error}",
-                        telegram_id=telegram_id,  # Può essere None
+                        telegram_id=telegram_id_for_log,  # Può essere None
                         correlation_id=correlation_id,
                         component="gioia-processor",
                         error_type="database_error",
@@ -247,7 +268,8 @@ async def process_inventory_background(
                         business_name=business_name,
                         job_id=job_id,
                         file_type=file_type,
-                        error_code="DATABASE_ERROR"
+                        error_code="DATABASE_ERROR",
+                        user_id=user_id
                     )
                     
                     await update_job_status(
