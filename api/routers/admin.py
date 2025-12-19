@@ -811,7 +811,7 @@ async def update_wine_field_with_movement(
                 log_with_context(
                     "info",
                     f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Quantità aggiornata senza movimento: {quantity_before} → {new_value} per wine_id={wine_id}",
-                    telegram_id=telegram_id
+                    telegram_id=user_id  # Mantenuto per retrocompatibilità log
                 )
                 
                 return {
