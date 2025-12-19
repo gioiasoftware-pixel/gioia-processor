@@ -983,15 +983,15 @@ async def add_wine(
         
         async for db in get_db():
             # Verifica utente
-            stmt = select(User).where(User.telegram_id == telegram_id)
+            stmt = select(User).where(User.id == user_id)
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
             
             if not user:
-                raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
+                raise HTTPException(status_code=404, detail=f"Utente user_id={user_id} non trovato")
             
             # Assicura esistenza tabelle
-            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables(db, user_id, business_name)
             table_inventario = user_tables["inventario"]
             
             # Prepara dati vino
