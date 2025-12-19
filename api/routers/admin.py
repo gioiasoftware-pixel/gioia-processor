@@ -15,7 +15,7 @@ from pydantic import BaseModel
 import base64
 from sqlalchemy import select, text as sql_text
 
-from core.database import get_db, User, ensure_user_tables_from_telegram_id, batch_insert_wines
+from core.database import get_db, User, ensure_user_tables_from_telegram_id, ensure_user_tables, find_or_create_user_by_business_name, batch_insert_wines
 from core.logger import log_with_context
 from core.scheduler import generate_daily_movements_report, send_daily_reports_to_all_users
 from telegram_notifier import send_telegram_message
@@ -445,12 +445,12 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
     Questo endpoint accetta il contenuto CSV come stringa base64 invece di multipart form.
     Utile quando ci sono problemi con l'ordine dei campi multipart.
     """
-    correlation_id = f"admin_insert_{request.telegram_id}_{request.business_name}"
+    correlation_id = f"admin_insert_{request.telegram_id or 'no_telegram'}_{request.business_name}"
     
     try:
         log_with_context(
             "info",
-            f"[ADMIN_INSERT_JSON] Inizio inserimento inventario per {request.telegram_id}/{request.business_name}",
+            f"[ADMIN_INSERT_JSON] Inizio inserimento inventario per {request.telegram_id or 'N/A'}/{request.business_name}",
             telegram_id=request.telegram_id,
             correlation_id=correlation_id
         )
@@ -545,6 +545,7 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
             
             return {
                 "status": "success",
+                "user_id": user.id,
                 "telegram_id": request.telegram_id,
                 "business_name": request.business_name,
                 "mode": request.mode,
