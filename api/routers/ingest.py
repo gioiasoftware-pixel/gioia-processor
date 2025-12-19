@@ -15,7 +15,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db, batch_insert_wines, ensure_user_tables_from_telegram_id, ensure_user_tables, find_or_create_user_by_business_name, User
+from core.database import get_db, batch_insert_wines, ensure_user_tables, find_or_create_user_by_business_name, User
 from core.job_manager import create_job, get_job_by_client_msg_id, update_job_status
 from core.logger import log_with_context
 from ingest.pipeline import process_file
@@ -31,7 +31,7 @@ async def process_inventory_background(
     file_type: str,
     file_content: bytes,
     file_name: str,
-    telegram_id: Optional[int] = None,  # Opzionale: solo per retrocompatibilità
+    user_id: Optional[int] = None,  # Opzionale: se None, crea nuovo utente con solo business_name
     correlation_id: Optional[str] = None,
     mode: str = "add",  # "add" o "replace"
     dry_run: bool = False  # Se True, solo anteprima senza salvare
@@ -47,7 +47,7 @@ async def process_inventory_background(
         file_type: Tipo file (csv, excel, xlsx, xls, image, jpg, jpeg, png, pdf)
         file_content: Contenuto file (bytes)
         file_name: Nome file
-        telegram_id: ID Telegram utente (opzionale, solo per retrocompatibilità)
+        user_id: ID utente (opzionale: se None, crea nuovo utente con solo business_name)
         correlation_id: ID correlazione per logging
         mode: Modalità salvataggio ("add" o "replace")
         dry_run: Se True, solo anteprima senza salvare
@@ -64,8 +64,8 @@ async def process_inventory_background(
             
             log_with_context(
                 "info",
-                f"Job {job_id}: Started processing for business_name: {business_name}, telegram_id: {telegram_id or 'N/A'}",
-                telegram_id=telegram_id,  # Può essere None
+                f"Job {job_id}: Started processing for business_name: {business_name}, user_id: {user_id or 'N/A'}",
+                telegram_id=user_id,  # Mantenuto per retrocompatibilità log
                 correlation_id=correlation_id
             )
             
@@ -270,7 +270,6 @@ async def process_inventory_background(
                     "error_count": error_count,
                     "business_name": business_name,
                     "user_id": user.id,
-                    "telegram_id": telegram_id if telegram_id else None,
                     "ai_enhanced": ai_enabled,
                     "processing_method": processing_method,
                     "stage_used": stage_used,
@@ -572,7 +571,7 @@ async def process_inventory_endpoint(
     business_name: str = Form(...),
     file_type: str = Form(...),
     file: UploadFile = File(...),
-    telegram_id: Optional[int] = Form(None),  # Opzionale: solo per retrocompatibilità
+    user_id: Optional[int] = Form(None),  # Opzionale: se None, crea nuovo utente con solo business_name
     client_msg_id: Optional[str] = Form(None),  # Opzionale: per idempotenza
     correlation_id: Optional[str] = Form(None),  # Opzionale: per logging
     mode: str = Form("add"),  # "add" o "replace" - modalità import
@@ -587,7 +586,7 @@ async def process_inventory_endpoint(
         business_name: Nome business (obbligatorio)
         file_type: Tipo file (obbligatorio)
         file: File inventario (obbligatorio)
-        telegram_id: ID Telegram utente (opzionale, solo per retrocompatibilità)
+        user_id: ID utente (opzionale: se None, crea nuovo utente con solo business_name)
         client_msg_id: ID messaggio client per idempotenza (opzionale)
         correlation_id: ID correlazione per logging (opzionale)
         mode: Modalità salvataggio "add" o "replace" (default: "add")
@@ -598,14 +597,14 @@ async def process_inventory_endpoint(
     try:
         log_with_context(
             "info",
-            f"Creating job for business: {business_name}, type: {file_type}, telegram_id: {telegram_id or 'N/A'}",
-            telegram_id=telegram_id,
+            f"Creating job for business: {business_name}, type: {file_type}, user_id: {user_id or 'N/A'}",
+            telegram_id=user_id,  # Mantenuto per retrocompatibilità log
             correlation_id=correlation_id
         )
         
         # Validazione input
-        if telegram_id and telegram_id <= 0:
-            raise HTTPException(status_code=400, detail="Invalid telegram_id (must be positive if provided)")
+        if user_id and user_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid user_id (must be positive if provided)")
         
         if not business_name or len(business_name.strip()) == 0:
             raise HTTPException(status_code=400, detail="Business name is required")
@@ -624,18 +623,18 @@ async def process_inventory_endpoint(
             raise HTTPException(status_code=413, detail="File too large (max 10MB)")
         
         # IDEMPOTENZA: Controlla se job esiste già con stesso client_msg_id
-        # Nota: usa telegram_id=0 se non fornito (valore fittizio per ProcessingJob)
-        telegram_id_for_job = telegram_id if telegram_id else 0
-        if client_msg_id and telegram_id:
+        # Nota: usa user_id=0 se non fornito (valore fittizio per ProcessingJob)
+        user_id_for_job = user_id if user_id else 0
+        if client_msg_id and user_id:
             async for db in get_db():
-                existing_job = await get_job_by_client_msg_id(db, telegram_id, client_msg_id)
+                existing_job = await get_job_by_client_msg_id(db, user_id, client_msg_id)
                 if existing_job:
                     # Job già esistente: ritorna risultato precedente
                     if existing_job.status == 'completed':
                         log_with_context(
                             "info",
                             f"Job already completed (idempotency): {existing_job.job_id}",
-                            telegram_id=telegram_id,
+                            telegram_id=user_id,  # Mantenuto per retrocompatibilità log
                             correlation_id=correlation_id
                         )
                         return {
@@ -648,7 +647,7 @@ async def process_inventory_endpoint(
                         log_with_context(
                             "info",
                             f"Job already processing (idempotency): {existing_job.job_id}",
-                            telegram_id=telegram_id,
+                            telegram_id=user_id,  # Mantenuto per retrocompatibilità log
                             correlation_id=correlation_id
                         )
                         return {
@@ -661,12 +660,12 @@ async def process_inventory_endpoint(
                 break
         
         # Crea nuovo job
-        # Nota: usa telegram_id=0 se non fornito (valore fittizio per ProcessingJob, 
+        # Nota: usa user_id=0 se non fornito (valore fittizio per ProcessingJob, 
         # che ancora richiede telegram_id ma useremo user_id in futuro)
         async for db in get_db():
             job_id = await create_job(
                 db,
-                telegram_id=telegram_id_for_job,
+                telegram_id=user_id_for_job,  # ProcessingJob usa ancora telegram_id per retrocompatibilità schema DB
                 business_name=business_name,
                 file_type=file_type.lower(),
                 file_name=file.filename or "inventario",
@@ -678,7 +677,7 @@ async def process_inventory_endpoint(
         log_with_context(
             "info",
             f"Job {job_id} created, starting background processing",
-            telegram_id=telegram_id,
+            telegram_id=user_id,  # Mantenuto per retrocompatibilità log
             correlation_id=correlation_id
         )
         
@@ -686,7 +685,7 @@ async def process_inventory_endpoint(
         asyncio.create_task(
             process_inventory_background(
                 job_id=job_id,
-                telegram_id=telegram_id,
+                user_id=user_id,
                 business_name=business_name,
                 file_type=file_type,
                 file_content=file_content,

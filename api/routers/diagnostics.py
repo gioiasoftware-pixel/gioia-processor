@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import User, ensure_user_tables_from_telegram_id, get_db
+from core.database import User, ensure_user_tables, get_db
 from core.diagnostics_state import get_snapshot as get_diagnostics_snapshot
 from ingest.header_identifier import identify_headers_and_extract
 from ingest.llm_extract import deduplicate_wines
@@ -75,7 +75,7 @@ def _sanitize_db_row(row_mapping: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.post("/compare")
 async def compare_inventory(
-    telegram_id: int = Form(...),
+    user_id: int = Form(...),
     business_name: str = Form(...),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db)
@@ -156,14 +156,14 @@ async def compare_inventory(
         file_keys[key] = wine
 
     # Recupera dati inventario dal DB
-    stmt_user = select(User).where(User.telegram_id == telegram_id, User.business_name == business_name)
+    stmt_user = select(User).where(User.id == user_id, User.business_name == business_name)
     result_user = await db.execute(stmt_user)
     user = result_user.scalar_one_or_none()
 
     if not user:
         raise HTTPException(status_code=404, detail="Utente non trovato nel database")
 
-    user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
+    user_tables = await ensure_user_tables(db, user_id, business_name)
     table_inventario = user_tables["inventario"]
 
     fetch_stmt = sql_text(

@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Form, HTTPException
 from sqlalchemy import select, text as sql_text
 
-from core.database import get_db, ensure_user_tables_from_telegram_id, ProcessingJob, User
+from core.database import get_db, ensure_user_tables, ProcessingJob, User
 from core.logger import log_with_context
 
 logger = logging.getLogger(__name__)
@@ -186,7 +186,7 @@ async def process_movement_background(
             logger.info(
                 f"[MOVEMENT] Job {job_id}: 🔍 Searching wine in database | "
                 f"wine_name='{wine_name}', movement_type={movement_type}, quantity={quantity}, "
-                f"telegram_id={telegram_id}, business_name='{business_name}', "
+                f"user_id={user_id}, business_name='{business_name}', "
                 f"search_pattern='{wine_name_pattern}', variants={len(search_variants)}"
             )
             
@@ -221,7 +221,7 @@ async def process_movement_background(
                     
                     await enqueue_admin_notification(
                         event_type="error",
-                        telegram_id=telegram_id,
+                        telegram_id=user_id,  # Mantenuto per retrocompatibilità notifiche
                         payload={
                             "business_name": business_name,
                             "error_type": "movement_wine_not_found",
@@ -231,7 +231,8 @@ async def process_movement_background(
                             "movement_type": movement_type,
                             "wine_name": wine_name,
                             "quantity": quantity,
-                            "search_pattern": wine_name_pattern
+                            "search_pattern": wine_name_pattern,
+                            "user_id": user_id
                         },
                         correlation_id=job_id
                     )
@@ -273,7 +274,7 @@ async def process_movement_background(
                             
                             await enqueue_admin_notification(
                                 event_type="error",
-                                telegram_id=telegram_id,
+                                telegram_id=user_id,  # Mantenuto per retrocompatibilità notifiche
                                 payload={
                                     "business_name": business_name,
                                     "error_type": "movement_insufficient_quantity",
@@ -284,7 +285,8 @@ async def process_movement_background(
                                     "wine_name": wine_name_db,
                                     "wine_id": wine_id,
                                     "quantity_requested": quantity,
-                                    "quantity_available": quantity_before
+                                    "quantity_available": quantity_before,
+                                    "user_id": user_id
                                 },
                                 correlation_id=job_id
                             )
@@ -431,7 +433,7 @@ async def process_movement_background(
             except Exception as te:
                 await db.rollback()
                 logger.error(
-                    f"[MOVEMENT] Job {job_id}: Transaction error | telegram_id={telegram_id}, business={business_name}, "
+                    f"[MOVEMENT] Job {job_id}: Transaction error | user_id={user_id}, business={business_name}, "
                     f"wine_name={wine_name}, movement_type={movement_type}, quantity={quantity} | Error: {str(te)}",
                     exc_info=True
                 )
@@ -442,7 +444,7 @@ async def process_movement_background(
                     
                     await enqueue_admin_notification(
                         event_type="error",
-                        telegram_id=telegram_id,
+                        telegram_id=user_id,  # Mantenuto per retrocompatibilità notifiche
                         payload={
                             "business_name": business_name,
                             "error_type": "movement_transaction_error",
@@ -452,7 +454,8 @@ async def process_movement_background(
                             "movement_type": movement_type,
                             "wine_name": wine_name,
                             "quantity": quantity,
-                            "wine_id": wine_id if 'wine_id' in locals() else None
+                            "wine_id": wine_id if 'wine_id' in locals() else None,
+                            "user_id": user_id
                         },
                         correlation_id=job_id
                     )
@@ -489,7 +492,7 @@ async def process_movement_background(
             log_with_context(
                 "info",
                 f"[MOVEMENT] Job {job_id}: Movement processed successfully - {movement_type} {quantity} {wine_name_db}",
-                telegram_id=telegram_id
+                telegram_id=user_id  # Mantenuto per retrocompatibilità log
             )
             break
 
@@ -529,7 +532,7 @@ async def process_movement_background(
 
 @router.post("/process-movement")
 async def process_movement(
-    telegram_id: int = Form(...),
+    user_id: int = Form(...),
     business_name: str = Form(...),
     wine_name: str = Form(...),
     movement_type: str = Form(...),  # 'consumo' o 'rifornimento'
@@ -543,7 +546,7 @@ async def process_movement(
     
     try:
         logger.info(
-            f"Creating movement job for telegram_id: {telegram_id}, business: {business_name}, {movement_type} {quantity} {wine_name}"
+            f"Creating movement job for user_id: {user_id}, business: {business_name}, {movement_type} {quantity} {wine_name}"
         )
 
         if movement_type not in ['consumo', 'rifornimento']:
@@ -556,7 +559,7 @@ async def process_movement(
         async for db in get_db():
             job = ProcessingJob(
                 job_id=job_id,
-                telegram_id=telegram_id,
+                telegram_id=user_id,  # ProcessingJob usa ancora telegram_id per retrocompatibilità schema DB
                 business_name=business_name,
                 status='pending',
                 file_type='movement',
@@ -574,7 +577,7 @@ async def process_movement(
         try:
             await process_movement_background(
                 job_id=job_id,
-                telegram_id=telegram_id,
+                user_id=user_id,
                 business_name=business_name,
                 wine_name=wine_name,
                 movement_type=movement_type,
@@ -599,7 +602,7 @@ async def process_movement(
                         "quantity_before": result_data.get("quantity_before", 0),
                         "quantity_after": result_data.get("quantity_after", 0),
                         "movement_type": movement_type,
-                        "telegram_id": telegram_id,
+                        "user_id": user_id,
                         "message": f"Movimento {movement_type} completato con successo"
                     }
                 elif job.status == 'error':
@@ -609,7 +612,7 @@ async def process_movement(
                         "job_id": job_id,
                         "error": job.error_message or "Errore sconosciuto durante l'elaborazione",
                         "error_message": job.error_message or "Errore sconosciuto durante l'elaborazione",
-                        "telegram_id": telegram_id
+                        "user_id": user_id
                     }
                 else:
                     # Stato inatteso
@@ -618,13 +621,13 @@ async def process_movement(
                         "job_id": job_id,
                         "error": f"Stato job inatteso: {job.status}",
                         "error_message": f"Stato job inatteso: {job.status}",
-                        "telegram_id": telegram_id
+                        "user_id": user_id
                     }
                 break
         except Exception as e:
             logger.error(
                 f"Error processing movement synchronously: {e} | "
-                f"telegram_id={telegram_id}, wine_name={wine_name}, "
+                f"user_id={user_id}, wine_name={wine_name}, "
                 f"movement_type={movement_type}, quantity={quantity}",
                 exc_info=True
             )
@@ -633,7 +636,7 @@ async def process_movement(
                 "job_id": job_id,
                 "error": f"Errore durante elaborazione: {str(e)}",
                 "error_message": f"Errore durante elaborazione: {str(e)}",
-                "telegram_id": telegram_id
+                "user_id": user_id
             }
 
     except HTTPException:
@@ -647,7 +650,7 @@ async def process_movement(
             
             await enqueue_admin_notification(
                 event_type="error",
-                telegram_id=telegram_id,
+                telegram_id=user_id,  # Mantenuto per retrocompatibilità notifiche
                 payload={
                     "business_name": business_name,
                     "error_type": "movement_job_creation_error",
@@ -656,7 +659,8 @@ async def process_movement(
                     "component": "gioia-processor",
                     "movement_type": movement_type,
                     "wine_name": wine_name,
-                    "quantity": quantity
+                    "quantity": quantity,
+                    "user_id": user_id
                 },
                 correlation_id=None
             )

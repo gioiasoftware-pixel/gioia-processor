@@ -253,26 +253,24 @@ async def get_job_status(job_id: str):
 
 @app.post("/create-tables")
 async def create_user_tables(
-    telegram_id: int = Form(...),
+    user_id: int = Form(...),
     business_name: str = Form(...)
 ):
     """
-    Crea tabelle utente nel processor (compatibilità con bot).
-    
-    Mantiene compatibilità endpoint esistente per onboarding.
+    Crea tabelle utente nel processor.
     """
     try:
         async for db in get_db():
-            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables(db, user_id, business_name)
             
             logger.info(
-                f"Tabelle create per telegram_id={telegram_id}, "
+                f"Tabelle create per user_id={user_id}, "
                 f"business_name={business_name}: {list(user_tables.keys())}"
             )
             
             return {
                 "status": "success",
-                "telegram_id": telegram_id,
+                "user_id": user_id,
                 "business_name": business_name,
                 "tables": user_tables
             }

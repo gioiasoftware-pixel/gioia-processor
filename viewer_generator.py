@@ -222,7 +222,7 @@ def store_viewer_html(view_id: str, html: str):
 
 async def prepare_viewer_data(
     db,
-    telegram_id: int,
+    user_id: int,
     business_name: str,
     correlation_id: str = None
 ) -> Dict[str, Any]:
@@ -231,24 +231,24 @@ async def prepare_viewer_data(
     Salva in cache per essere recuperati successivamente.
     """
     import time
-    from core.database import ensure_user_tables_from_telegram_id, User
+    from core.database import ensure_user_tables, User
     from sqlalchemy import select
     
     logger.info(
-        f"[VIEWER_DATA] Preparazione dati inventario per telegram_id={telegram_id}, "
+        f"[VIEWER_DATA] Preparazione dati inventario per user_id={user_id}, "
         f"business_name={business_name}, correlation_id={correlation_id}"
     )
     
     # Verifica utente
-    stmt = select(User).where(User.telegram_id == telegram_id)
+    stmt = select(User).where(User.id == user_id)
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
     
     if not user:
-        raise ValueError(f"Utente non trovato per telegram_id={telegram_id}")
+        raise ValueError(f"Utente non trovato per user_id={user_id}")
     
     # Assicura che tabelle esistano
-    user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
+    user_tables = await ensure_user_tables(db, user_id, business_name)
     table_inventario = user_tables["inventario"]
     
     # Recupera tutti i vini
@@ -322,17 +322,17 @@ async def prepare_viewer_data(
     }
     
     # Salva in cache
-    _viewer_data_cache[telegram_id] = (data, time.time())
+    _viewer_data_cache[user_id] = (data, time.time())
     
     logger.info(
         f"[VIEWER_DATA] Dati preparati e salvati in cache: rows={len(rows)}, "
-        f"telegram_id={telegram_id}, correlation_id={correlation_id}"
+        f"user_id={user_id}, correlation_id={correlation_id}"
     )
     
     return data
 
 
-def get_viewer_data_from_cache(telegram_id: int) -> tuple[Dict[str, Any] | None, bool]:
+def get_viewer_data_from_cache(user_id: int) -> tuple[Dict[str, Any] | None, bool]:
     """
     Recupera dati inventario dalla cache se disponibili e non scaduti.
     
@@ -341,15 +341,15 @@ def get_viewer_data_from_cache(telegram_id: int) -> tuple[Dict[str, Any] | None,
     """
     import time
     
-    if telegram_id not in _viewer_data_cache:
+    if user_id not in _viewer_data_cache:
         return None, False
     
-    data, timestamp = _viewer_data_cache[telegram_id]
+    data, timestamp = _viewer_data_cache[user_id]
     
     # Verifica scadenza
     if time.time() - timestamp > _cache_expiry_seconds:
-        logger.info(f"[VIEWER_DATA_CACHE] Dati per telegram_id={telegram_id} scaduti, rimuovo dalla cache")
-        del _viewer_data_cache[telegram_id]
+        logger.info(f"[VIEWER_DATA_CACHE] Dati per user_id={user_id} scaduti, rimuovo dalla cache")
+        del _viewer_data_cache[user_id]
         return None, False
     
     return data, True

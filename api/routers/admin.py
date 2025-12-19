@@ -15,7 +15,7 @@ from pydantic import BaseModel
 import base64
 from sqlalchemy import select, text as sql_text
 
-from core.database import get_db, User, ensure_user_tables_from_telegram_id, ensure_user_tables, find_or_create_user_by_business_name, batch_insert_wines
+from core.database import get_db, User, ensure_user_tables, find_or_create_user_by_business_name, batch_insert_wines
 from core.logger import log_with_context
 from core.scheduler import generate_daily_movements_report, send_daily_reports_to_all_users
 from telegram_notifier import send_telegram_message
@@ -113,7 +113,7 @@ def parse_csv_content(csv_content: bytes) -> List[Dict[str, Any]]:
 
 @router.post("/insert-inventory")
 async def admin_insert_inventory(
-    telegram_id: int = Form(...),
+    user_id: int = Form(...),
     business_name: str = Form(...),
     file: UploadFile = File(...),
     mode: str = Form("add"),  # "add" o "replace"
@@ -127,7 +127,7 @@ async def admin_insert_inventory(
     3. NON esegue pulizie/normalizzazioni (CSV deve essere già pulito)
     
     Args:
-        telegram_id: ID Telegram utente
+        user_id: ID utente
         business_name: Nome business
         file: File CSV inventario pulito
         mode: "add" (aggiunge) o "replace" (sostituisce)
@@ -135,13 +135,13 @@ async def admin_insert_inventory(
     Returns:
         Dict con risultato inserimento
     """
-    correlation_id = f"admin_insert_{telegram_id}_{business_name}"
+    correlation_id = f"admin_insert_{user_id}_{business_name}"
     
     try:
         log_with_context(
             "info",
-            f"[ADMIN_INSERT] Inizio inserimento inventario per {telegram_id}/{business_name}",
-            telegram_id=telegram_id,
+            f"[ADMIN_INSERT] Inizio inserimento inventario per user_id={user_id}/{business_name}",
+            telegram_id=user_id,  # Mantenuto per retrocompatibilità log
             correlation_id=correlation_id
         )
         
@@ -430,7 +430,7 @@ async def admin_trigger_daily_report(
 
 class InsertInventoryJSONRequest(BaseModel):
     """Request model per inserimento inventario via JSON (bypass multipart)"""
-    telegram_id: Optional[int] = None
+    user_id: Optional[int] = None  # Opzionale: se None, crea nuovo utente con solo business_name
     business_name: str
     file_content_base64: str  # CSV content in base64
     mode: str = "add"  # "add" o "replace"
@@ -445,13 +445,13 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
     Questo endpoint accetta il contenuto CSV come stringa base64 invece di multipart form.
     Utile quando ci sono problemi con l'ordine dei campi multipart.
     """
-    correlation_id = f"admin_insert_{request.telegram_id or 'no_telegram'}_{request.business_name}"
+    correlation_id = f"admin_insert_{request.user_id or 'new_user'}_{request.business_name}"
     
     try:
         log_with_context(
             "info",
-            f"[ADMIN_INSERT_JSON] Inizio inserimento inventario per {request.telegram_id or 'N/A'}/{request.business_name}",
-            telegram_id=request.telegram_id,
+            f"[ADMIN_INSERT_JSON] Inizio inserimento inventario per user_id={request.user_id or 'N/A'}/{request.business_name}",
+            telegram_id=request.user_id,  # Mantenuto per retrocompatibilità log
             correlation_id=correlation_id
         )
         
@@ -476,7 +476,7 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
         log_with_context(
             "info",
             f"[ADMIN_INSERT_JSON] Trovati {len(wines)} vini nel CSV",
-            telegram_id=request.telegram_id,
+            telegram_id=request.user_id,  # Mantenuto per retrocompatibilità log
             correlation_id=correlation_id
         )
         
@@ -485,25 +485,27 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
             # Crea/verifica utente e tabelle (crea automaticamente se non esistono)
             log_with_context(
                 "info",
-                f"[ADMIN_INSERT_JSON] Creazione/verifica tabelle per utente {request.telegram_id or 'N/A'}/{request.business_name}",
-                telegram_id=request.telegram_id,
+                f"[ADMIN_INSERT_JSON] Creazione/verifica tabelle per utente user_id={request.user_id or 'N/A'}/{request.business_name}",
+                telegram_id=request.user_id,  # Mantenuto per retrocompatibilità log
                 correlation_id=correlation_id
             )
             
-            # Se telegram_id è presente, usa la logica di retrocompatibilità
+            # Se user_id è presente, usa quello
             # Altrimenti, crea/ottieni utente solo con business_name
-            if request.telegram_id is not None:
-                user_tables = await ensure_user_tables_from_telegram_id(db, request.telegram_id, request.business_name)
-                # Trova utente per telegram_id
-                stmt = select(User).where(User.telegram_id == request.telegram_id)
+            if request.user_id is not None:
+                # Trova utente per user_id
+                stmt = select(User).where(User.id == request.user_id)
                 result = await db.execute(stmt)
                 user = result.scalar_one_or_none()
                 
                 if not user:
                     raise HTTPException(
                         status_code=404,
-                        detail=f"Utente telegram_id={request.telegram_id} non trovato dopo creazione tabelle"
+                        detail=f"Utente user_id={request.user_id} non trovato"
                     )
+                
+                # Crea tabelle usando user_id
+                user_tables = await ensure_user_tables(db, request.user_id, request.business_name)
             else:
                 # Crea/ottieni utente solo con business_name
                 user = await find_or_create_user_by_business_name(db, request.business_name)
@@ -547,14 +549,13 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
             log_with_context(
                 "info",
                 f"[ADMIN_INSERT_JSON] Inserimento completato: {saved_count} salvati, {error_count} errori",
-                telegram_id=request.telegram_id,
+                telegram_id=user.id,  # Mantenuto per retrocompatibilità log
                 correlation_id=correlation_id
             )
             
             return {
                 "status": "success",
                 "user_id": user.id,
-                "telegram_id": request.telegram_id,
                 "business_name": request.business_name,
                 "mode": request.mode,
                 "source": request.source,
@@ -582,7 +583,7 @@ async def admin_insert_inventory_json(request: InsertInventoryJSONRequest):
 
 @router.post("/update-wine-field")
 async def update_wine_field(
-    telegram_id: int = Form(...),
+    user_id: int = Form(...),
     business_name: str = Form(...),
     wine_id: int = Form(...),
     field: str = Form(...),
@@ -654,15 +655,15 @@ async def update_wine_field(
         
         async for db in get_db():
             # Verifica utente
-            stmt = select(User).where(User.telegram_id == telegram_id)
+            stmt = select(User).where(User.id == user_id)
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
             
             if not user:
-                raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
+                raise HTTPException(status_code=404, detail=f"Utente user_id={user_id} non trovato")
             
             # Assicura esistenza tabelle
-            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables(db, user_id, business_name)
             table_inventario = user_tables["inventario"]
             
             # Verifica che il vino esista
@@ -670,7 +671,7 @@ async def update_wine_field(
                 SELECT id FROM {table_inventario}
                 WHERE id = :wine_id AND user_id = :user_id
             """)
-            wine_check = await db.execute(check_wine, {"wine_id": wine_id, "user_id": user.id})
+            wine_check = await db.execute(check_wine, {"wine_id": wine_id, "user_id": user_id})
             if not wine_check.fetchone():
                 raise HTTPException(status_code=404, detail=f"Vino con id {wine_id} non trovato")
             
@@ -681,7 +682,7 @@ async def update_wine_field(
                 WHERE id = :wine_id AND user_id = :user_id
                 RETURNING id
             """)
-            result = await db.execute(update_stmt, {"val": new_value, "wine_id": wine_id, "user_id": user.id})
+            result = await db.execute(update_stmt, {"val": new_value, "wine_id": wine_id, "user_id": user_id})
             updated = result.scalar_one_or_none()
             
             if not updated:
@@ -693,7 +694,7 @@ async def update_wine_field(
             log_with_context(
                 "info",
                 f"[UPDATE_WINE_FIELD] Campo aggiornato: {field} = {new_value} per wine_id={wine_id}",
-                telegram_id=telegram_id
+                telegram_id=user_id  # Mantenuto per retrocompatibilità log
             )
             
             return {
@@ -716,7 +717,7 @@ async def update_wine_field(
 
 @router.post("/update-wine-field-with-movement")
 async def update_wine_field_with_movement(
-    telegram_id: int = Form(...),
+    user_id: int = Form(...),
     business_name: str = Form(...),
     wine_id: int = Form(...),
     field: str = Form(...),
@@ -727,7 +728,7 @@ async def update_wine_field_with_movement(
     Mantiene il flusso di tracciabilità come se fosse fatto in chat.
     
     Args:
-        telegram_id: ID Telegram utente
+        user_id: ID utente
         business_name: Nome business
         wine_id: ID vino da aggiornare
         field: Deve essere 'quantity'
@@ -753,15 +754,15 @@ async def update_wine_field_with_movement(
         
         async for db in get_db():
             # Verifica utente
-            stmt = select(User).where(User.telegram_id == telegram_id)
+            stmt = select(User).where(User.id == user_id)
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
             
             if not user:
-                raise HTTPException(status_code=404, detail=f"Utente {telegram_id} non trovato")
+                raise HTTPException(status_code=404, detail=f"Utente user_id={user_id} non trovato")
             
             # Assicura esistenza tabelle
-            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, business_name)
+            user_tables = await ensure_user_tables(db, user_id, business_name)
             table_inventario = user_tables["inventario"]
             table_consumi = user_tables["consumi"]
             
@@ -771,7 +772,7 @@ async def update_wine_field_with_movement(
                 FROM {table_inventario}
                 WHERE id = :wine_id AND user_id = :user_id
             """)
-            wine_result = await db.execute(get_wine, {"wine_id": wine_id, "user_id": user.id})
+            wine_result = await db.execute(get_wine, {"wine_id": wine_id, "user_id": user_id})
             wine_row = wine_result.fetchone()
             
             if not wine_row:
@@ -861,7 +862,7 @@ async def update_wine_field_with_movement(
                     WHERE id = :wine_id AND user_id = :user_id
                     RETURNING id
                 """)
-                result = await db.execute(update_stmt, {"val": new_value, "wine_id": wine_id, "user_id": user.id})
+                result = await db.execute(update_stmt, {"val": new_value, "wine_id": wine_id, "user_id": user_id})
                 updated = result.scalar_one_or_none()
                 
                 if not updated:
@@ -880,7 +881,7 @@ async def update_wine_field_with_movement(
                     VALUES (:user_id, :wine_name, :wine_producer, :movement_type, :quantity_change, :quantity_before, :quantity_after, CURRENT_TIMESTAMP)
                 """)
                 await db.execute(insert_mov, {
-                    "user_id": user.id,
+                    "user_id": user_id,
                     "wine_name": wine_name_db,
                     "wine_producer": wine_producer,
                     "movement_type": movement_type,
@@ -900,7 +901,7 @@ async def update_wine_field_with_movement(
                     "info",
                     f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] Campo quantity aggiornato con movimento: {quantity_before} → {quantity_after} "
                     f"({movement_type} {abs(quantity_change)}) per wine_id={wine_id}",
-                    telegram_id=telegram_id
+                    telegram_id=user_id  # Mantenuto per retrocompatibilità log
                 )
                 
                 return {
@@ -942,7 +943,7 @@ async def update_wine_field_with_movement(
 
 @router.post("/add-wine")
 async def add_wine(
-    telegram_id: int = Form(...),
+    user_id: int = Form(...),
     business_name: str = Form(...),
     name: str = Form(...),
     producer: Optional[str] = Form(None),
@@ -964,7 +965,7 @@ async def add_wine(
     Aggiunge un nuovo vino all'inventario.
     
     Args:
-        telegram_id: ID Telegram utente
+        user_id: ID utente
         business_name: Nome business
         name: Nome vino (obbligatorio)
         Altri campi: opzionali
@@ -1058,8 +1059,8 @@ async def add_wine(
             log_with_context(
                 "info",
                 f"[ADD_WINE] Vino aggiunto: wine_id={wine_id}, name='{name}', "
-                f"telegram_id={telegram_id}, business_name={business_name}",
-                telegram_id=telegram_id
+                f"user_id={user_id}, business_name={business_name}",
+                telegram_id=user_id  # Mantenuto per retrocompatibilità log
             )
             
             return {

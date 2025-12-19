@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db, ensure_user_tables_from_telegram_id, User
+from core.database import get_db, ensure_user_tables, User
 from jwt_utils import validate_viewer_token
 from viewer_generator import (
     generate_viewer_html_from_db,
@@ -283,7 +283,7 @@ async def export_inventory_csv_endpoint(token: str = Query(...)):
 
 @router.post("/viewer/prepare-data")
 async def prepare_viewer_data_endpoint(
-    telegram_id: int = Form(...),
+    user_id: int = Form(...),
     business_name: str = Form(...),
     correlation_id: Optional[str] = Form(None)
 ):
@@ -295,31 +295,31 @@ async def prepare_viewer_data_endpoint(
     """
     try:
         logger.info(
-            f"[VIEWER_PREPARE] Preparazione dati per telegram_id={telegram_id}, "
+            f"[VIEWER_PREPARE] Preparazione dati per user_id={user_id}, "
             f"business_name={business_name}, correlation_id={correlation_id}"
         )
         
         async for db in get_db():
             data = await prepare_viewer_data(
-                db, telegram_id, business_name, correlation_id
+                db, user_id, business_name, correlation_id
             )
             
             logger.info(
                 f"[VIEWER_PREPARE] Dati preparati con successo: rows={len(data.get('rows', []))}, "
-                f"telegram_id={telegram_id}, correlation_id={correlation_id}"
+                f"user_id={user_id}, correlation_id={correlation_id}"
             )
             break
         
         return {
             "status": "completed",
-            "telegram_id": telegram_id,
+            "user_id": user_id,
             "message": "Dati preparati e pronti"
         }
         
     except Exception as e:
         logger.error(
             f"[VIEWER_PREPARE] Errore preparazione dati: {e}, "
-            f"telegram_id={telegram_id}, correlation_id={correlation_id}",
+            f"user_id={user_id}, correlation_id={correlation_id}",
             exc_info=True
         )
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
@@ -389,7 +389,7 @@ async def get_viewer_html_endpoint(view_id: str):
 @router.get("/viewer/movements")
 async def get_wine_movements_endpoint(
     wine_name: str = Query(...),
-    telegram_id: int = Query(...)
+    user_id: int = Query(...)
 ):
     """
     Restituisce movimenti e stock per un vino specifico.
@@ -398,7 +398,7 @@ async def get_wine_movements_endpoint(
     try:
         async for db in get_db():
             # Verifica utente
-            stmt = select(User).where(User.telegram_id == telegram_id)
+            stmt = select(User).where(User.id == user_id)
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
             
@@ -409,7 +409,7 @@ async def get_wine_movements_endpoint(
                 raise HTTPException(status_code=400, detail="Utente senza business_name")
             
             # Assicura tabelle esistano
-            user_tables = await ensure_user_tables_from_telegram_id(db, telegram_id, user.business_name)
+            user_tables = await ensure_user_tables(db, user_id, user.business_name)
             table_storico = user_tables.get("storico")
             
             if not table_storico:
