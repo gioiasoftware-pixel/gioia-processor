@@ -198,7 +198,7 @@ async def admin_insert_inventory(
                 log_with_context(
                     "info",
                     f"[ADMIN_INSERT] Inventario esistente eliminato (mode=replace)",
-                    telegram_id=telegram_id,
+                    telegram_id=user_id,  # Mantenuto per retrocompatibilità log
                     correlation_id=correlation_id
                 )
             
@@ -215,13 +215,13 @@ async def admin_insert_inventory(
             log_with_context(
                 "info",
                 f"[ADMIN_INSERT] Inserimento completato: {saved_count} salvati, {error_count} errori",
-                telegram_id=telegram_id,
+                telegram_id=user_id,  # Mantenuto per retrocompatibilità log
                 correlation_id=correlation_id
             )
             
             return {
                 "status": "success",
-                "telegram_id": telegram_id,
+                "telegram_id": user_id,  # user_id usato come telegram_id per retrocompatibilità
                 "business_name": business_name,
                 "total_wines": len(wines),
                 "saved_wines": saved_count,
@@ -237,7 +237,7 @@ async def admin_insert_inventory(
             f"[ADMIN_INSERT] Errore inserimento inventario: {e}",
             exc_info=True,
             extra={
-                "telegram_id": telegram_id,
+                "telegram_id": user_id,  # user_id usato come telegram_id per retrocompatibilità
                 "correlation_id": correlation_id
             }
         )
