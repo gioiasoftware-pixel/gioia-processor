@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from core.config import get_config, validate_config
-from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables_from_telegram_id, AsyncSessionLocal
+from core.database import create_tables, get_db, ProcessingJob, ensure_user_tables_from_telegram_id, ensure_user_tables, AsyncSessionLocal
 from core.logger import setup_colored_logging
 from core.scheduler import start_scheduler, shutdown_scheduler
 from api.routers import ingest, snapshot
