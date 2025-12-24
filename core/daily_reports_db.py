@@ -140,6 +140,9 @@ async def get_daily_report_pdf(user_id: int, report_date: date) -> Optional[Dict
     """
     try:
         async with AsyncSessionLocal() as session:
+            # Assicura tabella esista
+            await ensure_daily_reports_table(session)
+            
             query = sql_text("""
                 SELECT id, pdf_data, business_name, total_consumi, total_rifornimenti, total_movements, created_at
                 FROM daily_reports

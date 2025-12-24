@@ -5,9 +5,26 @@ import json
 import logging
 from datetime import datetime
 from sqlalchemy import text as sql_text, select
-from core.database import get_db, ensure_user_tables_from_telegram_id, User
+from core.database import get_db, ensure_user_tables_from_telegram_id, User, AsyncSessionLocal
+from core.daily_reports_db import ensure_daily_reports_table
 
 logger = logging.getLogger(__name__)
+
+
+async def migrate_daily_reports_table():
+    """
+    Crea la tabella daily_reports se non esiste.
+    """
+    async for db in get_db():
+        try:
+            await ensure_daily_reports_table(db)
+            await db.commit()
+            logger.info("[MIGRATION] Tabella daily_reports verificata/creata")
+        except Exception as e:
+            logger.error(f"[MIGRATION] Errore creazione tabella daily_reports: {e}", exc_info=True)
+            await db.rollback()
+            raise
+        break
 
 
 async def migrate_wine_history():
@@ -231,5 +248,6 @@ async def migrate_wine_history():
                 )
                 continue
         break
+
 
 

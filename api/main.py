@@ -49,10 +49,15 @@ app.include_router(reports.router)  # /api/reports/* endpoints
 
 async def run_auto_migrations():
     """
-    Migrazioni automatiche - tutte completate.
-    Nessuna migrazione necessaria al momento.
+    Migrazioni automatiche.
+    Crea tabelle necessarie se non esistono.
     """
-    logger.info("[AUTO-MIGRATION] Nessuna migrazione necessaria - tutte le migrazioni sono state completate")
+    try:
+        from core.migrations import migrate_daily_reports_table
+        await migrate_daily_reports_table()
+        logger.info("[AUTO-MIGRATION] Migrazioni completate")
+    except Exception as e:
+        logger.warning(f"[AUTO-MIGRATION] Errore durante migrazioni (continuing anyway): {e}", exc_info=True)
 
 
 @app.on_event("startup")
