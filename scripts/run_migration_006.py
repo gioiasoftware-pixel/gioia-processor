@@ -61,3 +61,5 @@ async def run_migration_006():
 
 if __name__ == "__main__":
     asyncio.run(run_migration_006())
+
+

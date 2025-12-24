@@ -38,3 +38,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_users_telegram_id
 CREATE INDEX IF NOT EXISTS idx_users_telegram 
   ON users (telegram_id)
   WHERE telegram_id IS NOT NULL;
+
+

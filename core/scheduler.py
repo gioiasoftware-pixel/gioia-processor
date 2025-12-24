@@ -14,8 +14,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select, text as sql_text
 
-from core.database import AsyncSessionLocal, User, ensure_user_tables_from_telegram_id
+from core.database import AsyncSessionLocal, User, ensure_user_tables
 from core.config import get_config
+from core.pdf_report_generator import generate_daily_report_pdf
+from core.daily_reports_db import save_daily_report_pdf, ensure_daily_reports_table
 from telegram_notifier import send_telegram_message
 
 logger = logging.getLogger(__name__)
@@ -76,7 +78,7 @@ async def generate_daily_movements_report(
             end_of_day_utc = end_of_day_italy.astimezone(pytz.UTC).replace(tzinfo=None)
             
             logger.info(
-                f"[DAILY_REPORT] Cercando movimenti per {telegram_id} tra "
+                f"[DAILY_REPORT] Cercando movimenti per user_id={user_id} tra "
                 f"{start_of_day_italy.strftime('%Y-%m-%d %H:%M:%S %Z')} e "
                 f"{end_of_day_italy.strftime('%Y-%m-%d %H:%M:%S %Z')} "
                 f"(UTC: {start_of_day_utc} - {end_of_day_utc})"
@@ -187,10 +189,210 @@ async def generate_daily_movements_report(
             
         except Exception as e:
             logger.error(
-                f"[DAILY_REPORT] Errore generazione report per {telegram_id}: {e}",
+                f"[DAILY_REPORT] Errore generazione report per user_id={user_id}: {e}",
                 exc_info=True
             )
             return None
+
+
+async def generate_daily_pdf_reports_for_all_users():
+    """
+    Genera e salva PDF report giornalieri per tutti gli utenti.
+    
+    Eseguita ogni giorno alle 5:00 AM ora italiana.
+    Genera PDF per il giorno precedente e li salva nel database.
+    """
+    logger.info("[PDF_REPORT_SCHEDULER] Inizio generazione PDF report giornalieri")
+    
+    try:
+        # Data del giorno precedente (ora italiana)
+        now_italy = datetime.now(ITALY_TZ)
+        yesterday = now_italy - timedelta(days=1)
+        yesterday_date = yesterday.date()
+        
+        logger.info(
+            f"[PDF_REPORT_SCHEDULER] Generazione PDF report per data: {yesterday_date.strftime('%Y-%m-%d')}"
+        )
+        
+        async with AsyncSessionLocal() as session:
+            # Assicura tabella daily_reports esista
+            await ensure_daily_reports_table(session)
+            
+            # Recupera tutti gli utenti attivi
+            stmt = select(User).where(
+                User.onboarding_completed == True
+            )
+            result = await session.execute(stmt)
+            users = result.scalars().all()
+            
+            logger.info(f"[PDF_REPORT_SCHEDULER] Trovati {len(users)} utenti attivi")
+            
+            generated_count = 0
+            skipped_count = 0
+            error_count = 0
+            
+            for user in users:
+                try:
+                    if not user.business_name:
+                        logger.warning(
+                            f"[PDF_REPORT_SCHEDULER] Utente {user.id} senza business_name, skip"
+                        )
+                        skipped_count += 1
+                        continue
+                    
+                    # Assicura tabelle esistano
+                    user_tables = await ensure_user_tables(session, user.id, user.business_name)
+                    table_consumi = user_tables["consumi"]
+                    
+                    # Calcola range giornata (00:00 - 23:59 ora italiana)
+                    start_of_day_italy = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_of_day_italy = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999)
+                    
+                    # Converti in UTC per confronto con timestamp del database
+                    start_of_day_utc = start_of_day_italy.astimezone(pytz.UTC).replace(tzinfo=None)
+                    end_of_day_utc = end_of_day_italy.astimezone(pytz.UTC).replace(tzinfo=None)
+                    
+                    # Query movimenti del giorno
+                    query_movements = sql_text(f"""
+                        SELECT 
+                            wine_name,
+                            wine_producer,
+                            movement_type,
+                            quantity_change,
+                            quantity_before,
+                            quantity_after,
+                            movement_date
+                        FROM {table_consumi}
+                        WHERE user_id = :user_id
+                        AND movement_date >= :start_date
+                        AND movement_date <= :end_date
+                        ORDER BY movement_date ASC
+                    """)
+                    
+                    result = await session.execute(query_movements, {
+                        "user_id": user.id,
+                        "start_date": start_of_day_utc,
+                        "end_date": end_of_day_utc
+                    })
+                    movements_rows = result.fetchall()
+                    
+                    # Converti movimenti in formato dict
+                    movements = []
+                    for row in movements_rows:
+                        movements.append({
+                            'wine_name': row[0] or 'Sconosciuto',
+                            'wine_producer': row[1],
+                            'movement_type': row[2],
+                            'quantity_change': row[3],
+                            'quantity_before': row[4],
+                            'quantity_after': row[5],
+                            'movement_date': row[6]
+                        })
+                    
+                    # Calcola statistiche
+                    total_consumi = sum(
+                        abs(m['quantity_change']) 
+                        for m in movements 
+                        if m['movement_type'] == 'consumo'
+                    )
+                    total_rifornimenti = sum(
+                        m['quantity_change'] 
+                        for m in movements 
+                        if m['movement_type'] == 'rifornimento'
+                    )
+                    total_movements = len(movements)
+                    
+                    # Raggruppa per vino per calcolare top 5
+                    wines_dict = {}
+                    for mov in movements:
+                        wine_name = mov['wine_name']
+                        if wine_name not in wines_dict:
+                            wines_dict[wine_name] = {
+                                'total_consumed': 0,
+                                'total_replenished': 0
+                            }
+                        
+                        if mov['movement_type'] == 'consumo':
+                            wines_dict[wine_name]['total_consumed'] += abs(mov['quantity_change'])
+                        elif mov['movement_type'] == 'rifornimento':
+                            wines_dict[wine_name]['total_replenished'] += mov['quantity_change']
+                    
+                    # Top 5 più consumati
+                    top_5_consumed = sorted(
+                        [
+                            {'wine_name': name, 'total_consumed': data['total_consumed']}
+                            for name, data in wines_dict.items()
+                            if data['total_consumed'] > 0
+                        ],
+                        key=lambda x: x['total_consumed'],
+                        reverse=True
+                    )[:5]
+                    
+                    # Top 5 più riforniti
+                    top_5_replenished = sorted(
+                        [
+                            {'wine_name': name, 'total_replenished': data['total_replenished']}
+                            for name, data in wines_dict.items()
+                            if data['total_replenished'] > 0
+                        ],
+                        key=lambda x: x['total_replenished'],
+                        reverse=True
+                    )[:5]
+                    
+                    # Genera PDF (anche se non ci sono movimenti, genera PDF con "Nessun Movimento")
+                    pdf_data = generate_daily_report_pdf(
+                        business_name=user.business_name,
+                        report_date=yesterday_date,
+                        movements=movements,
+                        top_5_consumed=top_5_consumed,
+                        top_5_replenished=top_5_replenished
+                    )
+                    
+                    # Salva PDF nel database
+                    report_id = await save_daily_report_pdf(
+                        user_id=user.id,
+                        report_date=yesterday_date,
+                        pdf_data=pdf_data,
+                        business_name=user.business_name,
+                        total_consumi=total_consumi,
+                        total_rifornimenti=total_rifornimenti,
+                        total_movements=total_movements
+                    )
+                    
+                    if report_id:
+                        generated_count += 1
+                        logger.info(
+                            f"[PDF_REPORT_SCHEDULER] PDF generato e salvato: user_id={user.id}, "
+                            f"report_id={report_id}, movements={total_movements}"
+                        )
+                    else:
+                        error_count += 1
+                        logger.warning(
+                            f"[PDF_REPORT_SCHEDULER] Errore salvataggio PDF per user_id={user.id}"
+                        )
+                    
+                    # Piccola pausa tra generazioni
+                    import asyncio
+                    await asyncio.sleep(0.2)
+                    
+                except Exception as e:
+                    error_count += 1
+                    logger.error(
+                        f"[PDF_REPORT_SCHEDULER] Errore generazione PDF per user_id={user.id}: {e}",
+                        exc_info=True
+                    )
+                    continue
+            
+            logger.info(
+                f"[PDF_REPORT_SCHEDULER] Completato: {generated_count} generati, "
+                f"{skipped_count} saltati, {error_count} errori"
+            )
+    
+    except Exception as e:
+        logger.error(
+            f"[PDF_REPORT_SCHEDULER] Errore critico generazione PDF report: {e}",
+            exc_info=True
+        )
 
 
 async def send_daily_reports_to_all_users():
@@ -301,44 +503,56 @@ def setup_daily_reports_scheduler():
     """
     Configura scheduler per report giornalieri.
     
-    Esegue report ogni giorno alle 10:00 ora italiana.
+    - Alle 5:00 AM: Genera PDF report per tutti gli utenti (giorno precedente)
+    - Alle 10:00 AM: Invia report via Telegram (legacy, mantenuto per compatibilità)
     """
     config = get_config()
     
-    # Verifica configurazione
-    if not config.telegram_bot_token:
-        logger.warning(
-            "[SCHEDULER] TELEGRAM_BOT_TOKEN non configurato - "
-            "report giornalieri disabilitati"
-        )
-        return False
-    
-    # Verifica feature flag (opzionale)
-    daily_reports_enabled = os.getenv("DAILY_REPORTS_ENABLED", "true").lower() == "true"
-    if not daily_reports_enabled:
-        logger.info("[SCHEDULER] Report giornalieri disabilitati (DAILY_REPORTS_ENABLED=false)")
-        return False
-    
     scheduler = get_scheduler()
     
-    # Aggiungi job per report giornaliero alle 10:00 ora italiana
+    # Job 1: Genera PDF alle 5:00 AM
     scheduler.add_job(
-        send_daily_reports_to_all_users,
+        generate_daily_pdf_reports_for_all_users,
         trigger=CronTrigger(
-            hour=10,
+            hour=5,
             minute=0,
             timezone=ITALY_TZ
         ),
-        id="daily_movements_report",
-        name="Report Movimenti Giornaliero",
+        id="generate_daily_pdf_reports",
+        name="Genera PDF Report Giornalieri",
         replace_existing=True,
-        max_instances=1,  # Solo una istanza alla volta
-        misfire_grace_time=3600  # Se manca, esegui entro 1 ora
+        max_instances=1,
+        misfire_grace_time=3600
     )
     
     logger.info(
-        "[SCHEDULER] Report giornaliero configurato: ogni giorno alle 10:00 (ora italiana)"
+        "[SCHEDULER] Generazione PDF report configurata: ogni giorno alle 5:00 AM (ora italiana)"
     )
+    
+    # Job 2: Invia report Telegram alle 10:00 AM (legacy, solo se configurato)
+    if config.telegram_bot_token:
+        daily_reports_enabled = os.getenv("DAILY_REPORTS_ENABLED", "true").lower() == "true"
+        if daily_reports_enabled:
+            scheduler.add_job(
+                send_daily_reports_to_all_users,
+                trigger=CronTrigger(
+                    hour=10,
+                    minute=0,
+                    timezone=ITALY_TZ
+                ),
+                id="daily_movements_report",
+                name="Report Movimenti Giornaliero (Telegram)",
+                replace_existing=True,
+                max_instances=1,
+                misfire_grace_time=3600
+            )
+            logger.info(
+                "[SCHEDULER] Report Telegram configurato: ogni giorno alle 10:00 (ora italiana)"
+            )
+    else:
+        logger.info(
+            "[SCHEDULER] TELEGRAM_BOT_TOKEN non configurato - report Telegram disabilitati"
+        )
     
     return True
 

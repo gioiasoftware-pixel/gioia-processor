@@ -149,3 +149,5 @@ Poi modifica il file SQL con il nome corretto.
 ```bash
 psql $DATABASE_URL -U postgres -f migrations/006_make_telegram_id_nullable.sql
 ```
+
+

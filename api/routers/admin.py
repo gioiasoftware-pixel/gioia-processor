@@ -247,6 +247,180 @@ async def admin_insert_inventory(
         )
 
 
+@router.post("/trigger-generate-pdf-reports")
+async def admin_trigger_generate_pdf_reports(
+    user_id: Optional[int] = Form(None),
+    report_date: Optional[str] = Form(None),  # Formato: YYYY-MM-DD, default: ieri
+):
+    """
+    Endpoint admin per triggerare manualmente la generazione PDF report.
+    
+    Args:
+        user_id: ID utente specifico (opzionale). Se None, genera per tutti.
+        report_date: Data del report in formato YYYY-MM-DD (opzionale). Default: ieri.
+    
+    Returns:
+        Dict con risultato generazione PDF
+    """
+    try:
+        from core.scheduler import generate_daily_pdf_reports_for_all_users
+        from core.pdf_report_generator import generate_daily_report_pdf
+        from core.daily_reports_db import save_daily_report_pdf, ensure_daily_reports_table
+        from core.database import AsyncSessionLocal, User, ensure_user_tables
+        from sqlalchemy import select
+        from datetime import datetime, timedelta
+        import pytz
+        
+        ITALY_TZ = pytz.timezone('Europe/Rome')
+        
+        # Parse data report (default: ieri)
+        if report_date:
+            try:
+                report_date_obj = datetime.strptime(report_date, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Formato data non valido: {report_date}. Usa formato YYYY-MM-DD"
+                )
+        else:
+            # Default: ieri
+            now_italy = datetime.now(ITALY_TZ)
+            yesterday = now_italy - timedelta(days=1)
+            report_date_obj = yesterday.date()
+        
+        report_date_str = report_date_obj.strftime("%Y-%m-%d")
+        
+        logger.info(
+            f"[ADMIN_PDF_REPORT] Trigger manuale generazione PDF per data: {report_date_str}, "
+            f"user_id: {user_id if user_id else 'TUTTI'}"
+        )
+        
+        if user_id:
+            # Genera PDF per un utente specifico
+            async with AsyncSessionLocal() as session:
+                await ensure_daily_reports_table(session)
+                
+                stmt = select(User).where(User.id == user_id)
+                result = await session.execute(stmt)
+                user = result.scalar_one_or_none()
+                
+                if not user or not user.business_name:
+                    raise HTTPException(status_code=404, detail="Utente non trovato o senza business_name")
+                
+                # Usa la stessa logica di generate_daily_pdf_reports_for_all_users
+                user_tables = await ensure_user_tables(session, user.id, user.business_name)
+                table_consumi = user_tables["consumi"]
+                
+                start_of_day_italy = datetime.combine(report_date_obj, datetime.min.time())
+                end_of_day_italy = datetime.combine(report_date_obj, datetime.max.time())
+                start_of_day_utc = start_of_day_italy.astimezone(pytz.UTC).replace(tzinfo=None)
+                end_of_day_utc = end_of_day_italy.astimezone(pytz.UTC).replace(tzinfo=None)
+                
+                query_movements = sql_text(f"""
+                    SELECT 
+                        wine_name,
+                        wine_producer,
+                        movement_type,
+                        quantity_change,
+                        quantity_before,
+                        quantity_after,
+                        movement_date
+                    FROM {table_consumi}
+                    WHERE user_id = :user_id
+                    AND movement_date >= :start_date
+                    AND movement_date <= :end_date
+                    ORDER BY movement_date ASC
+                """)
+                
+                result = await session.execute(query_movements, {
+                    "user_id": user.id,
+                    "start_date": start_of_day_utc,
+                    "end_date": end_of_day_utc
+                })
+                movements_rows = result.fetchall()
+                
+                movements = []
+                for row in movements_rows:
+                    movements.append({
+                        'wine_name': row[0] or 'Sconosciuto',
+                        'wine_producer': row[1],
+                        'movement_type': row[2],
+                        'quantity_change': row[3],
+                        'quantity_before': row[4],
+                        'quantity_after': row[5],
+                        'movement_date': row[6]
+                    })
+                
+                total_consumi = sum(abs(m['quantity_change']) for m in movements if m['movement_type'] == 'consumo')
+                total_rifornimenti = sum(m['quantity_change'] for m in movements if m['movement_type'] == 'rifornimento')
+                total_movements = len(movements)
+                
+                wines_dict = {}
+                for mov in movements:
+                    wine_name = mov['wine_name']
+                    if wine_name not in wines_dict:
+                        wines_dict[wine_name] = {'total_consumed': 0, 'total_replenished': 0}
+                    if mov['movement_type'] == 'consumo':
+                        wines_dict[wine_name]['total_consumed'] += abs(mov['quantity_change'])
+                    elif mov['movement_type'] == 'rifornimento':
+                        wines_dict[wine_name]['total_replenished'] += mov['quantity_change']
+                
+                top_5_consumed = sorted(
+                    [{'wine_name': name, 'total_consumed': data['total_consumed']}
+                     for name, data in wines_dict.items() if data['total_consumed'] > 0],
+                    key=lambda x: x['total_consumed'], reverse=True
+                )[:5]
+                
+                top_5_replenished = sorted(
+                    [{'wine_name': name, 'total_replenished': data['total_replenished']}
+                     for name, data in wines_dict.items() if data['total_replenished'] > 0],
+                    key=lambda x: x['total_replenished'], reverse=True
+                )[:5]
+                
+                pdf_data = generate_daily_report_pdf(
+                    business_name=user.business_name,
+                    report_date=report_date_obj,
+                    movements=movements,
+                    top_5_consumed=top_5_consumed,
+                    top_5_replenished=top_5_replenished
+                )
+                
+                report_id = await save_daily_report_pdf(
+                    user_id=user.id,
+                    report_date=report_date_obj,
+                    pdf_data=pdf_data,
+                    business_name=user.business_name,
+                    total_consumi=total_consumi,
+                    total_rifornimenti=total_rifornimenti,
+                    total_movements=total_movements
+                )
+                
+                if report_id:
+                    return {
+                        "success": True,
+                        "message": f"PDF generato per user_id={user_id}",
+                        "report_id": report_id,
+                        "report_date": report_date_str,
+                        "total_movements": total_movements
+                    }
+                else:
+                    raise HTTPException(status_code=500, detail="Errore salvataggio PDF")
+        else:
+            # Genera PDF per tutti gli utenti
+            await generate_daily_pdf_reports_for_all_users()
+            return {
+                "success": True,
+                "message": "Generazione PDF avviata per tutti gli utenti",
+                "report_date": report_date_str
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ADMIN_PDF_REPORT] Errore generazione PDF: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Errore generazione PDF: {str(e)}")
+
+
 @router.post("/trigger-daily-report")
 async def admin_trigger_daily_report(
     telegram_id: Optional[int] = None,

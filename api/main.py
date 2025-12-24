@@ -17,7 +17,7 @@ from core.database import create_tables, get_db, ProcessingJob, ensure_user_tabl
 from core.logger import setup_colored_logging
 from core.scheduler import start_scheduler, shutdown_scheduler
 from api.routers import ingest, snapshot
-from api.routers import movements, diagnostics, admin
+from api.routers import movements, diagnostics, admin, reports
 from ingest.learned_terms_manager import load_learned_terms_set, load_learned_terms_dict
 from ingest.wine_terms_dict import set_learned_terms
 
@@ -44,6 +44,7 @@ app.include_router(snapshot.router)  # /api/inventory/snapshot, /api/viewer/*, e
 app.include_router(movements.router, prefix="")  # /process-movement
 app.include_router(diagnostics.router)
 app.include_router(admin.router)  # /admin/* endpoints
+app.include_router(reports.router)  # /api/reports/* endpoints
 
 
 async def run_auto_migrations():

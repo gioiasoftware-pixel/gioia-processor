@@ -103,3 +103,5 @@ Tutti i file critici sono stati modificati. Il sistema ora:
 1. Eseguire migrazione `005_migrate_telegram_to_user_id.py` su produzione
 2. Eseguire migrazione `004_migrate_wine_history.py` su produzione
 3. Testare che tutto funzioni correttamente
+
+

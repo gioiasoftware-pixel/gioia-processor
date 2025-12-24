@@ -6,7 +6,8 @@ Moduli:
 - snapshot: Router per snapshot inventario e viewer (GET /api/inventory/*, GET /api/viewer/*)
 - movements: Router per movimenti (POST /process-movement)
 - admin: Router per operazioni admin (POST /admin/insert-inventory)
+- reports: Router per report PDF giornalieri (GET /api/reports/daily/{user_id})
 """
-from . import ingest, snapshot, movements, diagnostics, admin
+from . import ingest, snapshot, movements, diagnostics, admin, reports
 
-__all__ = ["ingest", "snapshot", "movements", "diagnostics", "admin"]
+__all__ = ["ingest", "snapshot", "movements", "diagnostics", "admin", "reports"]
