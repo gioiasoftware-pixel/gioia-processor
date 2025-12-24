@@ -3,6 +3,7 @@ Generatore PDF per report giornalieri movimenti vini.
 Genera PDF senza uso di IA, solo con reportlab.
 """
 import logging
+import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from io import BytesIO
@@ -10,7 +11,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+from reportlab.platypus.flowables import KeepTogether
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
