@@ -116,8 +116,20 @@ def generate_daily_report_pdf(
     # Costruisci contenuto PDF
     story = []
     
-    # Header
+    # Header con logo
     report_date_str = report_date.strftime("%d/%m/%Y")
+    
+    # Prova a caricare il logo
+    logo_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'logo.png')
+    if os.path.exists(logo_path):
+        try:
+            logo = Image(logo_path, width=3*cm, height=3*cm)
+            logo.hAlign = 'CENTER'
+            story.append(logo)
+            story.append(Spacer(1, 0.3*cm))
+        except Exception as e:
+            logger.warning(f"[PDF_REPORT] Errore caricamento logo: {e}")
+    
     story.append(Paragraph("📊 Report Movimenti Giornaliero", title_style))
     story.append(Paragraph(f"<b>{business_name}</b>", business_style))
     story.append(Paragraph(f"Data: {report_date_str}", subtitle_style))
