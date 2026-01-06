@@ -822,7 +822,12 @@ async def update_wine_field(
                     )
                 return v_normalized if v_normalized else None
             # Per stringhe (region, country, etc.), rimuovi spazi eccessivi
-            return str(v).strip() if v else None
+            # IMPORTANTE: Se v è stringa vuota "", str("").strip() = "", e "" è falsy, quindi ritorna None
+            # Ma se v è "liguria", str("liguria").strip() = "liguria", che è truthy, quindi ritorna "liguria"
+            stripped = str(v).strip() if v else ""
+            # Se dopo lo strip è ancora vuoto, ritorna None (per database)
+            # Altrimenti ritorna la stringa pulita
+            return stripped if stripped else None
         
         column = allowed_fields[field]
         new_value = cast_value(field, value)
@@ -850,6 +855,11 @@ async def update_wine_field(
                 raise HTTPException(status_code=404, detail=f"Vino con id {wine_id} non trovato")
             
             # Aggiorna campo
+            logger.info(
+                f"[UPDATE_WINE_FIELD] Esecuzione UPDATE per wine_id={wine_id}, field={field}, "
+                f"column={column}, new_value={new_value} (tipo: {type(new_value).__name__})"
+            )
+            
             update_stmt = sql_text(f"""
                 UPDATE {table_inventario}
                 SET {column} = :val, updated_at = CURRENT_TIMESTAMP
@@ -860,10 +870,22 @@ async def update_wine_field(
             updated = result.scalar_one_or_none()
             
             if not updated:
+                logger.error(f"[UPDATE_WINE_FIELD] ❌ Vino non trovato dopo UPDATE per wine_id={wine_id}")
                 await db.rollback()
                 raise HTTPException(status_code=404, detail="Vino non trovato dopo aggiornamento")
             
+            logger.info(f"[UPDATE_WINE_FIELD] ✅ UPDATE eseguito, commit in corso...")
             await db.commit()
+            logger.info(f"[UPDATE_WINE_FIELD] ✅ Commit completato per wine_id={wine_id}, field={field}")
+            
+            # Verifica che il valore sia stato salvato
+            verify_stmt = sql_text(f"""
+                SELECT {column} FROM {table_inventario}
+                WHERE id = :wine_id AND user_id = :user_id
+            """)
+            verify_result = await db.execute(verify_stmt, {"wine_id": wine_id, "user_id": user_id})
+            saved_value = verify_result.scalar_one_or_none()
+            logger.info(f"[UPDATE_WINE_FIELD] Verifica valore salvato per {field}: {saved_value}")
             
             log_with_context(
                 "info",
@@ -1068,6 +1090,105 @@ async def update_wine_field_with_movement(
                     f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] INSERT log movimento eseguito - "
                     f"movement_type={movement_type}, quantity_change={movement_quantity_change}"
                 )
+                
+                # Aggiorna/crea riga in "Storico vino" (fonte unica di verità per stock)
+                import json
+                from datetime import datetime
+                table_storico = user_tables.get("storico")
+                
+                if table_storico:
+                    movement_date = datetime.utcnow()
+                    movement_entry = {
+                        "type": movement_type,
+                        "quantity": abs(quantity_change),  # Quantità assoluta del movimento
+                        "date": movement_date.isoformat(),
+                        "quantity_before": quantity_before,
+                        "quantity_after": quantity_after
+                    }
+                    
+                    # Cerca se esiste già una riga per questo vino
+                    search_storico = sql_text(f"""
+                        SELECT id, current_stock, history, total_consumi, total_rifornimenti
+                        FROM {table_storico}
+                        WHERE user_id = :user_id
+                        AND wine_name = :wine_name
+                        AND (wine_producer = :wine_producer OR (wine_producer IS NULL AND :wine_producer IS NULL))
+                        FOR UPDATE
+                        LIMIT 1
+                    """)
+                    result_storico = await db.execute(search_storico, {
+                        "user_id": user_id,
+                        "wine_name": wine_name_db,
+                        "wine_producer": wine_producer
+                    })
+                    storico_row = result_storico.fetchone()
+                    
+                    if storico_row:
+                        # Aggiorna riga esistente
+                        # Parse history (potrebbe essere stringa JSON o già lista)
+                        existing_history_raw = storico_row[2] or []
+                        if isinstance(existing_history_raw, str):
+                            existing_history = json.loads(existing_history_raw)
+                        else:
+                            existing_history = existing_history_raw if existing_history_raw else []
+                        existing_history.append(movement_entry)
+                        
+                        new_total_consumi = storico_row[3] or 0
+                        new_total_rifornimenti = storico_row[4] or 0
+                        
+                        if movement_type == 'consumo':
+                            new_total_consumi += abs(quantity_change)
+                        else:
+                            new_total_rifornimenti += abs(quantity_change)
+                        
+                        update_storico = sql_text(f"""
+                            UPDATE {table_storico}
+                            SET current_stock = :current_stock,
+                                history = CAST(:history AS jsonb),
+                                total_consumi = :total_consumi,
+                                total_rifornimenti = :total_rifornimenti,
+                                last_movement_date = :movement_date,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :storico_id
+                        """)
+                        await db.execute(update_storico, {
+                            "current_stock": quantity_after,
+                            "history": json.dumps(existing_history),
+                            "total_consumi": new_total_consumi,
+                            "total_rifornimenti": new_total_rifornimenti,
+                            "movement_date": movement_date,
+                            "storico_id": storico_row[0]
+                        })
+                        logger.info(
+                            f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] UPDATE storico vino eseguito - "
+                            f"wine_name='{wine_name_db}', current_stock={quantity_after}"
+                        )
+                    else:
+                        # Crea nuova riga
+                        history = [movement_entry]
+                        
+                        insert_storico = sql_text(f"""
+                            INSERT INTO {table_storico}
+                                (user_id, wine_name, wine_producer, wine_vintage, current_stock, history,
+                                 first_movement_date, last_movement_date, total_consumi, total_rifornimenti)
+                            VALUES (:user_id, :wine_name, :wine_producer, :wine_vintage, :current_stock, CAST(:history AS jsonb),
+                                    :movement_date, :movement_date, :total_consumi, :total_rifornimenti)
+                        """)
+                        await db.execute(insert_storico, {
+                            "user_id": user_id,
+                            "wine_name": wine_name_db,
+                            "wine_producer": wine_producer,
+                            "wine_vintage": None,  # TODO: estrai da INVENTARIO se disponibile
+                            "current_stock": quantity_after,
+                            "history": json.dumps(history),
+                            "movement_date": movement_date,
+                            "total_consumi": abs(quantity_change) if movement_type == 'consumo' else 0,
+                            "total_rifornimenti": abs(quantity_change) if movement_type == 'rifornimento' else 0
+                        })
+                        logger.info(
+                            f"[UPDATE_WINE_FIELD_WITH_MOVEMENT] INSERT storico vino eseguito - "
+                            f"wine_name='{wine_name_db}', current_stock={quantity_after}"
+                        )
                 
                 await db.commit()
                 
