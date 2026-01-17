@@ -373,3 +373,151 @@ def generate_daily_report_pdf(
     
     return pdf_bytes
 
+
+def generate_inventory_stats_pdf(
+    business_name: str,
+    stats: Dict[str, Any]
+) -> bytes:
+    """
+    Genera PDF report statistiche inventario con stile gio.ia.
+    """
+    buffer = BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=2*cm,
+        leftMargin=2*cm,
+        topMargin=2*cm,
+        bottomMargin=2*cm
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=GIOIA_PRIMARY,
+        spaceAfter=30,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+
+    subtitle_style = ParagraphStyle(
+        'CustomSubtitle',
+        parent=styles['Heading2'],
+        fontSize=16,
+        textColor=GIOIA_DARK,
+        spaceAfter=20,
+        alignment=TA_CENTER,
+        fontName='Helvetica'
+    )
+
+    business_style = ParagraphStyle(
+        'BusinessName',
+        parent=styles['Heading2'],
+        fontSize=18,
+        textColor=GIOIA_SECONDARY,
+        spaceAfter=15,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+
+    section_style = ParagraphStyle(
+        'Section',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=GIOIA_PRIMARY,
+        spaceAfter=12,
+        spaceBefore=20,
+        fontName='Helvetica-Bold'
+    )
+
+    normal_style = styles['Normal']
+    normal_style.fontSize = 10
+    normal_style.textColor = colors.black
+
+    story = []
+
+    report_date_str = datetime.now().strftime("%d/%m/%Y")
+
+    logo_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'logo.png')
+    if os.path.exists(logo_path):
+        try:
+            logo = Image(logo_path, width=3*cm, height=3*cm)
+            logo.hAlign = 'CENTER'
+            story.append(logo)
+            story.append(Spacer(1, 0.3*cm))
+        except Exception as e:
+            logger.warning(f"[PDF_REPORT] Errore caricamento logo: {e}")
+
+    story.append(Paragraph("📊 Report Statistiche Inventario", title_style))
+    story.append(Paragraph(f"<b>{business_name}</b>", business_style))
+    story.append(Paragraph(f"Data: {report_date_str}", subtitle_style))
+    story.append(Spacer(1, 0.5*cm))
+
+    total_wines = stats.get("total_wines", 0)
+    total_bottles = stats.get("total_bottles", 0)
+    total_value = stats.get("total_value", 0.0)
+    types_distribution = stats.get("types_distribution", {})
+    low_stock_count = stats.get("low_stock_count", 0)
+    out_of_stock_count = stats.get("out_of_stock_count", 0)
+
+    story.append(Paragraph("📈 Statistiche Generali", section_style))
+    stats_data = [
+        ['Metrica', 'Valore'],
+        ['Vini totali', f'{total_wines}'],
+        ['Bottiglie totali', f'{total_bottles}'],
+        ['Valore stimato', f'€ {total_value:,.2f}'],
+        ['Vini a bassa scorta (<5)', f'{low_stock_count}'],
+        ['Vini esauriti (0)', f'{out_of_stock_count}']
+    ]
+
+    stats_table = Table(stats_data, colWidths=[8*cm, 8*cm])
+    stats_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), GIOIA_PRIMARY),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), GIOIA_LIGHT),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+
+    story.append(stats_table)
+
+    if types_distribution:
+        story.append(Paragraph("🍷 Distribuzione per Tipo", section_style))
+        distribution_rows = [['Tipo', 'Vini']]
+        for wine_type, count in sorted(types_distribution.items(), key=lambda x: x[1], reverse=True):
+            distribution_rows.append([str(wine_type), str(count)])
+
+        dist_table = Table(distribution_rows, colWidths=[10*cm, 6*cm])
+        dist_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), GIOIA_PRIMARY),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), GIOIA_LIGHT),
+            ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 10),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+
+        story.append(Spacer(1, 0.3*cm))
+        story.append(dist_table)
+
+    doc.build(story)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    logger.info(f"[PDF_REPORT] PDF statistiche inventario generato: {len(pdf_bytes)} bytes per {business_name}")
+    return pdf_bytes
+
